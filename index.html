@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GovEval — Treasury Grants Reviewed On-chain</title>
+<meta name="description" content="GovEval: a grant DAO that reads its own proposals. Fund a treasury, post a bond with your proposal, and an on-chain jury scores it against the funding standards — approved grants pay out, rejected bonds are slashed." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#0b0618; --surface:#150c2a; --card:#1c1136; --card2:#241645;
+    --line:#2e1f52; --line2:#3f2c6e;
+    --violet:#a78bfa; --indigo:#6366f1; --cyan:#22d3ee; --plum:#c026d3;
+    --ok:#34d399; --warn:#fbbf24; --err:#f87171;
+    --txt:#ede9fe; --mut:#a99cc9; --faint:#6d5c96;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:'Sora',system-ui,sans-serif;
+    background:
+      radial-gradient(900px 500px at 82% -12%, rgba(167,139,250,.16) 0%, transparent 58%),
+      radial-gradient(720px 470px at 6% 106%, rgba(34,211,238,.10) 0%, transparent 60%),
+      var(--bg);
+    color:var(--txt); min-height:100vh; padding:26px 18px 60px;
+  }
+  .wrap{max-width:1140px;margin:0 auto}
+  header{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+         padding-bottom:16px;border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:12px}
+  .mark{width:42px;height:42px;border-radius:13px;background:linear-gradient(150deg,var(--violet),var(--cyan));
+        display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:#150c2a;
+        box-shadow:0 4px 22px rgba(167,139,250,.34)}
+  h1{font-size:22px;font-weight:700;letter-spacing:-.2px}
+  .tag{font-family:'Fira Code',monospace;font-size:10.5px;color:var(--faint);margin-top:3px}
+  .wallet{display:flex;gap:9px;align-items:center}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);display:inline-block}
+  .dot.on{background:var(--ok);box-shadow:0 0 10px var(--ok)}
+  .pill{font-family:'Fira Code',monospace;font-size:11px;padding:5px 11px;border-radius:999px;
+        background:var(--surface);border:1px solid var(--line);color:var(--mut)}
+  button{font-family:inherit;cursor:pointer;border-radius:10px;font-size:13.5px;padding:9px 16px;
+         border:1px solid var(--line2);background:var(--card);color:var(--txt);transition:.16s}
+  button:hover{border-color:var(--violet);color:var(--violet)}
+  button.solid{background:linear-gradient(140deg,var(--violet),var(--indigo));border:none;color:#150c2a;font-weight:600}
+  button.solid:hover{filter:brightness(1.09);color:#150c2a}
+  button.cyan{background:rgba(34,211,238,.14);border:1px solid rgba(34,211,238,.45);color:var(--cyan)}
+  button.warn{background:rgba(251,191,36,.13);border:1px solid rgba(251,191,36,.42);color:var(--warn)}
+  button.danger{background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.42);color:var(--err)}
+  button.ghost{background:transparent;border-color:var(--line)}
+  button:disabled{opacity:.35;cursor:not-allowed}
+  .hero{margin:24px 0 20px}
+  .hero h2{font-size:29px;line-height:1.24;font-weight:600;letter-spacing:-.5px}
+  .hero h2 em{font-style:normal;color:var(--violet)}
+  .hero h2 i{font-style:normal;color:var(--cyan)}
+  .hero p{color:var(--mut);font-size:14.5px;line-height:1.65;margin-top:10px;max-width:800px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0 8px}
+  @media(max-width:780px){.stats{grid-template-columns:1fr 1fr}}
+  .st{background:linear-gradient(160deg,var(--card),var(--surface));border:1px solid var(--line);
+      border-radius:14px;padding:15px}
+  .st .k{font-family:'Fira Code',monospace;font-size:10px;color:var(--faint);letter-spacing:.5px}
+  .st .n{font-size:23px;font-weight:700;margin-top:6px;color:var(--violet)}
+  .st .n small{font-size:11px;color:var(--faint);font-weight:400;margin-left:3px}
+  .sec{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:26px 0 12px;flex-wrap:wrap}
+  .sec h3{font-size:15px;font-weight:600}
+  .sec h3 span{color:var(--faint);font-weight:400;font-size:12.5px;margin-left:7px}
+  .list{display:grid;gap:13px}
+  .prop{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:17px;cursor:pointer;transition:.18s}
+  .prop:hover{border-color:var(--violet);transform:translateY(-1px)}
+  .prop.sel{border-color:var(--violet);box-shadow:0 0 0 1px var(--violet) inset}
+  .prop .top{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+  .prop .id{font-family:'Fira Code',monospace;font-size:11px;color:var(--faint)}
+  .prop h4{font-size:15.5px;font-weight:600;margin:9px 0 4px}
+  .prop .by{font-family:'Fira Code',monospace;font-size:10.5px;color:var(--faint)}
+  .badge{font-family:'Fira Code',monospace;font-size:10.5px;padding:3px 9px;border-radius:6px;white-space:nowrap}
+  .b0{background:rgba(167,139,250,.15);color:var(--violet);border:1px solid rgba(167,139,250,.4)}
+  .b1{background:rgba(52,211,153,.14);color:var(--ok);border:1px solid rgba(52,211,153,.4)}
+  .b2{background:rgba(248,113,113,.13);color:var(--err);border:1px solid rgba(248,113,113,.4)}
+  .b3{background:rgba(34,211,238,.14);color:var(--cyan);border:1px solid rgba(34,211,238,.42)}
+  .nums{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
+  .nums>div{font-family:'Fira Code',monospace;font-size:10px;color:var(--faint)}
+  .nums b{display:block;font-size:12.5px;color:var(--txt);margin-top:3px}
+  .nums b.t{color:var(--cyan)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:15px;padding:18px;margin-bottom:14px}
+  .card h4{font-size:14px;font-weight:600;margin-bottom:12px}
+  .card h4 span{color:var(--faint);font-weight:400;font-size:12px;margin-left:6px}
+  .row{display:grid;gap:10px;grid-template-columns:1fr 1fr}
+  .row.three{grid-template-columns:1fr 1fr 1fr}
+  .row.one{grid-template-columns:1fr}
+  @media(max-width:700px){.row,.row.three{grid-template-columns:1fr}}
+  label{display:block;font-family:'Fira Code',monospace;font-size:10px;color:var(--faint);margin-bottom:5px}
+  input{width:100%;font-family:'Fira Code',monospace;font-size:12.5px;padding:10px 12px;border-radius:10px;
+        background:var(--surface);border:1px solid var(--line);color:var(--txt);outline:none}
+  input:focus{border-color:var(--violet)}
+  .msg{font-family:'Fira Code',monospace;font-size:11px;margin-top:10px;padding:9px 11px;border-radius:9px;display:none}
+  .msg.show{display:block}
+  .msg.info{background:rgba(167,139,250,.1);border:1px solid rgba(167,139,250,.3);color:var(--violet)}
+  .msg.ok{background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.32);color:var(--ok)}
+  .msg.err{background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.32);color:var(--err)}
+  .empty{padding:26px;text-align:center;color:var(--faint);font-size:13.5px;
+         border:1px dashed var(--line2);border-radius:14px}
+  .detail{display:none;margin-top:18px}
+  .detail.show{display:block}
+  .det{background:linear-gradient(165deg,var(--card2),var(--card));border:1px solid var(--line2);
+       border-radius:16px;padding:19px}
+  .det .hd{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  .bar{height:6px;background:var(--surface);border-radius:999px;overflow:hidden;margin:14px 0}
+  .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--violet),var(--cyan))}
+  .crit{font-size:13px;color:var(--mut);line-height:1.62;margin-top:9px;
+        background:var(--surface);border-left:2px solid var(--line2);padding:10px 12px;border-radius:0 9px 9px 0}
+  .verdict{font-size:12.5px;color:var(--mut);line-height:1.6;margin-top:10px;font-style:italic}
+  .acts{display:flex;gap:9px;flex-wrap:wrap;margin-top:15px}
+  .lbl{font-family:'Fira Code',monospace;font-size:10px;color:var(--faint)}
+  a{color:var(--cyan);text-decoration:none}
+  a:hover{text-decoration:underline}
+  footer{margin-top:32px;padding-top:16px;border-top:1px solid var(--line);
+         font-family:'Fira Code',monospace;font-size:11px;color:var(--faint);line-height:1.8}
+  .steps{counter-reset:s;font-size:13.5px;color:var(--mut);line-height:1.7}
+  .steps li{margin-left:18px;margin-bottom:5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="mark">G</div>
+      <div>
+        <h1>GovEval</h1>
+        <div class="tag">TREASURY GRANTS · ON-CHAIN PROPOSAL REVIEW · BRADBURY</div>
+      </div>
+    </div>
+    <div class="wallet">
+      <span class="pill"><span class="dot" id="netDot"></span> <span id="netLabel">not connected</span></span>
+      <button class="solid" id="connectBtn">Connect wallet</button>
+    </div>
+  </header>
+
+  <div class="hero">
+    <h2>A grant DAO that <em>reads its own proposals</em> — and <i>can't be talked into paying</i>.</h2>
+    <p>
+      Anyone can fund the treasury. An applicant submits a proposal and posts a bond in the same
+      call. An on-chain jury then fetches the proposal text and scores it against the funding
+      standards: approved proposals can be paid from the treasury and get the bond back, rejected
+      proposals have the bond slashed into the treasury. Every unit of GEN is accounted for in
+      either direction.
+    </p>
+  </div>
+
+  <div class="stats">
+    <div class="st"><div class="k">TREASURY</div><div class="n" id="sTreasury">—<small>GEN</small></div></div>
+    <div class="st"><div class="k">PROPOSALS</div><div class="n" id="sCount">—</div></div>
+    <div class="st"><div class="k">APPROVED</div><div class="n" id="sApproved">—</div></div>
+    <div class="st"><div class="k">GRANTED OUT</div><div class="n" id="sGranted">—<small>GEN</small></div></div>
+  </div>
+
+  <div class="sec">
+    <h3>Proposals <span id="listNote">· loading…</span></h3>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input id="jumpId" placeholder="proposal #" style="width:110px" />
+      <button class="ghost" id="jumpBtn">Open</button>
+      <button class="ghost" id="reloadBtn">Refresh</button>
+    </div>
+  </div>
+  <div class="list" id="list"><div class="empty">Loading proposals…</div></div>
+
+  <div class="detail" id="detail">
+    <div class="det">
+      <div class="hd">
+        <div><span class="lbl">PROPOSAL</span><h4 id="dTitle" style="font-size:17px">—</h4></div>
+        <span class="badge b0" id="dState">—</span>
+      </div>
+      <div class="nums" id="dNums"></div>
+      <div class="bar"><i id="dBar" style="width:0%"></i></div>
+      <div class="crit" id="dUrl"></div>
+      <div class="crit" id="dVerdict"></div>
+      <div class="acts">
+        <button class="cyan" id="dEvalBtn">Review with jury</button>
+        <button class="solid" id="dFundBtn">Fund it</button>
+        <button class="danger" id="dRejectBtn">Slash the bond</button>
+      </div>
+      <div class="msg" id="dMsg"></div>
+    </div>
+  </div>
+
+  <div class="sec"><h3>Fund the treasury <span>· anyone can</span></h3></div>
+  <div class="card">
+    <h4>Add GEN to the treasury</h4>
+    <div class="row">
+      <div><label>AMOUNT (GEN)</label><input id="fFund" type="number" step="0.01" placeholder="0.5" /></div>
+      <div style="display:flex;align-items:flex-end"><button class="solid" id="fundBtn">fund_treasury</button></div>
+    </div>
+    <div class="msg" id="fundMsg"></div>
+  </div>
+
+  <div class="sec"><h3>Submit a proposal <span>· bond required</span></h3></div>
+  <div class="card">
+    <h4>Propose work, bond GEN <span>· the bond returns on funding, is slashed on rejection</span></h4>
+    <div class="row">
+      <div><label>TITLE</label><input id="fTitle" placeholder="Fund a standards documentation effort" /></div>
+      <div><label>CATEGORY</label><input id="fCat" placeholder="docs" /></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div><label>PROPOSAL URL</label><input id="fUrl" placeholder="https://…" /></div>
+      <div><label>REQUESTED (GEN)</label><input id="fReq" type="number" step="0.01" placeholder="0.3" /></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div><label>BOND (GEN)</label><input id="fStake" type="number" step="0.01" placeholder="0.1" /></div>
+      <div style="display:flex;align-items:flex-end"><button class="solid" id="submitBtn">submit_proposal</button></div>
+    </div>
+    <div class="msg" id="subMsg"></div>
+  </div>
+
+  <div class="sec"><h3>Treasury admin</h3></div>
+  <div class="card">
+    <h4>Withdraw unallocated treasury <span>· admin only</span></h4>
+    <div class="row">
+      <div><label>AMOUNT (GEN)</label><input id="fWdraw" type="number" step="0.01" placeholder="0.2" /></div>
+      <div style="display:flex;align-items:flex-end"><button class="warn" id="wdrawBtn">withdraw_treasury</button></div>
+    </div>
+    <div class="msg" id="wdMsg"></div>
+  </div>
+
+  <div class="sec"><h3>How it works</h3></div>
+  <div class="card">
+    <ol class="steps">
+      <li>Anyone calls <b>fund_treasury</b> (payable) — the GEN becomes contract custody.</li>
+      <li>An applicant calls <b>submit_proposal</b> (payable) — the sent GEN is the anti-spam bond.</li>
+      <li><b>evaluate_proposal</b> runs the jury: it fetches the proposal URL on-chain, rules against the funding standards and returns a 0–100 score.</li>
+      <li>The admin either <b>fund_proposal</b> (treasury pays the grant, the bond goes back) or <b>reject_proposal</b> (the bond is slashed into the treasury).</li>
+      <li>The admin can <b>withdraw_treasury</b> at any time. No bond or grant can get stuck: every path ends in a real transfer.</li>
+    </ol>
+  </div>
+
+  <footer id="footLinks"></footer>
+</div>
+
+<script type="module">
+import { createClient } from "https://esm.sh/genlayer-js@0.7.0";
+import { testnetBradbury } from "https://esm.sh/genlayer-js@0.7.0/chains";
+
+const ADDR = "0x65A63336f432f9F6c780Adae6E32378665c26221";
+const REPO = "https://github.com/zhaozile001/goveval";
+const EXPLORER = "https://explorer-bradbury.genlayer.com/address/" + ADDR;
+// ------------------------------------------------------------------------
+
+const PSTATE = ["OPEN", "APPROVED", "REJECTED", "FUNDED"];
+const $ = (id) => document.getElementById(id);
+const readClient = createClient({ chain: testnetBradbury });
+let writeClient = null, myAddr = null, selected = null, proposals = [], adminAddr = null;
+
+const eth = (w) => (Number(w) / 1e18).toFixed(6);
+const short = (a) => (a && a.length > 16) ? a.slice(0, 8) + "…" + a.slice(-6) : a;
+const gen = (gw) => BigInt(Math.round(parseFloat(gw) * 1e6)) * 1000000000000n;
+function msg(el, t, k = "info") { el.className = "msg show " + k; el.textContent = t; }
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+function renderList() {
+  const el = $("list");
+  if (!proposals.length) { el.innerHTML = `<div class="empty">No proposals yet — fund the treasury and submit the first one.</div>`; return; }
+  el.innerHTML = proposals.map((p) => `
+    <div class="prop ${selected === Number(p.id) ? "sel" : ""}" data-id="${p.id}">
+      <div class="top">
+        <span class="id">PROPOSAL #${p.id}</span>
+        <span class="badge b${Number(p.state)}">${PSTATE[Number(p.state)] ?? p.state}${p.stake_settled ? " · BOND SETTLED" : ""}</span>
+      </div>
+      <h4>${esc(p.title)}</h4>
+      <div class="by">${esc(p.category)} · by ${short(p.author)}</div>
+      <div class="nums">
+        <div>REQUESTED<b class="t">${eth(p.requested)} GEN</b></div>
+        <div>BOND<b>${eth(p.stake)} GEN</b></div>
+        <div>SCORE<b>${String(p.score)}/100</b></div>
+        <div>CONFIDENCE<b>${esc(p.confidence) || "—"}</b></div>
+      </div>
+    </div>`).join("");
+  el.querySelectorAll(".prop").forEach((c) => c.addEventListener("click", () => openProposal(Number(c.dataset.id))));
+}
+
+async function renderDetail(p) {
+  selected = Number(p.id);
+  $("detail").classList.add("show");
+  $("dTitle").textContent = `#${p.id} · ${p.title}`;
+  const st = Number(p.state);
+  $("dState").className = "badge b" + st;
+  $("dState").textContent = `${PSTATE[st] ?? st}${p.stake_settled ? " · BOND SETTLED" : " · BOND HELD"}`;
+  $("dNums").innerHTML =
+    `<div>AUTHOR<b>${short(p.author)}</b></div>` +
+    `<div>REQUESTED<b class="t">${eth(p.requested)} GEN</b></div>` +
+    `<div>BOND<b>${eth(p.stake)} GEN</b></div>` +
+    `<div>SCORE<b>${String(p.score)}/100</b></div>`;
+  $("dBar").style.width = Math.min(100, Number(p.score)) + "%";
+  $("dUrl").innerHTML = `Proposal: <a href="${esc(p.proposal_url)}" target="_blank" rel="noopener">${esc(p.proposal_url)}</a>`;
+  $("dVerdict").innerHTML = p.verdict_reason
+    ? `Jury: ${esc(p.verdict_reason)}${p.confidence ? ` <span style="color:var(--faint);font-style:normal">(confidence: ${esc(p.confidence)})</span>` : ""}`
+    : `Not reviewed yet.`;
+
+  const isAdmin = myAddr && adminAddr && myAddr.toLowerCase() === adminAddr.toLowerCase();
+  const treasury = Number(await readClient.readContract({ address: ADDR, functionName: "get_treasury", args: [] }).then((t) => t.treasury).catch(() => 0));
+  $("dEvalBtn").disabled = st !== 0;
+  $("dFundBtn").disabled = !(isAdmin && st === 1 && treasury >= Number(p.requested));
+  $("dRejectBtn").disabled = !(isAdmin && st === 2);
+  renderList();
+}
+
+async function loadAll() {
+  try {
+    const t = await readClient.readContract({ address: ADDR, functionName: "get_treasury", args: [] });
+    adminAddr = t.admin;
+    const count = Number(t.proposal_count);
+    proposals = [];
+    let granted = 0;
+    for (let i = 1; i <= count; i++) {
+      const p = await readClient.readContract({ address: ADDR, functionName: "get_proposal", args: [BigInt(i)] });
+      proposals.push(p);
+      if (Number(p.state) === 3) granted += Number(p.requested);
+    }
+    renderList();
+    $("sTreasury").innerHTML = `${eth(t.treasury)}<small>GEN</small>`;
+    $("sCount").textContent = count;
+    $("sApproved").textContent = proposals.filter((p) => Number(p.state) === 1 || Number(p.state) === 3).length;
+    $("sGranted").innerHTML = `${eth(granted)}<small>GEN</small>`;
+    $("listNote").textContent = `· ${count} on file`;
+    if (selected) { const a = proposals.find((p) => Number(p.id) === selected); if (a) await renderDetail(a); }
+  } catch (e) {
+    $("list").innerHTML = `<div class="empty">Could not read proposals: ${esc((e.message || e).toString().slice(0, 130))}</div>`;
+  }
+}
+
+async function openProposal(id) {
+  try {
+    const p = await readClient.readContract({ address: ADDR, functionName: "get_proposal", args: [BigInt(id)] });
+    await renderDetail(p);
+    $("detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (e) { msg($("dMsg"), "Read failed: " + (e.message || e).toString().slice(0, 160), "err"); }
+}
+
+$("connectBtn").addEventListener("click", async () => {
+  if (!window.ethereum) return msg($("fundMsg"), "No wallet detected — install MetaMask.", "err");
+  try {
+    const a = await window.ethereum.request({ method: "eth_requestAccounts" });
+    myAddr = a[0];
+    try { await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x107d" }] }); }
+    catch {
+      await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{
+        chainId: "0x107d", chainName: "GenLayer Bradbury Testnet",
+        nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
+        rpcUrls: ["https://rpc-bradbury.genlayer.com"],
+        blockExplorerUrls: ["https://explorer-bradbury.genlayer.com"],
+      }]});
+    }
+    writeClient = createClient({ chain: testnetBradbury, account: window.ethereum });
+    $("netLabel").textContent = short(myAddr);
+    $("netDot").classList.add("on");
+    $("connectBtn").textContent = "Connected";
+    msg($("fundMsg"), "Wallet connected.", "ok");
+    if (selected) await openProposal(selected);
+  } catch (e) { msg($("fundMsg"), "Connect failed: " + e.message, "err"); }
+});
+
+async function write(fn, args, el, label, value = 0n) {
+  if (!writeClient) return msg(el, "Connect your wallet first.", "err");
+  try {
+    msg(el, `${label} → submitting…`, "info");
+    const hash = await writeClient.writeContract({ address: ADDR, functionName: fn, args, value });
+    msg(el, `${label} sent: ${hash}`, "ok");
+    setTimeout(loadAll, 15000);
+  } catch (e) { msg(el, `${label} failed: ` + (e.message || e).toString().slice(0, 220), "err"); }
+}
+
+$("fundBtn").addEventListener("click", () => {
+  const g = $("fFund").value;
+  if (!g) return msg($("fundMsg"), "Enter an amount.", "err");
+  write("fund_treasury", [], $("fundMsg"), `fund_treasury (${g} GEN)`, gen(g));
+});
+
+$("submitBtn").addEventListener("click", () => {
+  const t = $("fTitle").value.trim(), c = $("fCat").value.trim(), u = $("fUrl").value.trim(),
+        r = $("fReq").value, s = $("fStake").value;
+  if (!t || !c || !u || !r || !s) return msg($("subMsg"), "Fill in title, category, URL, requested amount and bond.", "err");
+  write("submit_proposal", [t, c, u, gen(r)], $("subMsg"), "submit_proposal", gen(s));
+});
+
+$("dEvalBtn").addEventListener("click", () => { if (selected) write("evaluate_proposal", [BigInt(selected)], $("dMsg"), "evaluate_proposal (jury reads the proposal on-chain)"); });
+$("dFundBtn").addEventListener("click", () => { if (selected) write("fund_proposal", [BigInt(selected)], $("dMsg"), "fund_proposal (treasury pays the grant, bond returned)"); });
+$("dRejectBtn").addEventListener("click", () => { if (selected) write("reject_proposal", [BigInt(selected)], $("dMsg"), "reject_proposal (bond slashed into the treasury)"); });
+
+$("wdrawBtn").addEventListener("click", () => {
+  const g = $("fWdraw").value;
+  if (!g || !myAddr) return msg($("wdMsg"), "Connect your wallet and enter an amount.", "err");
+  write("withdraw_treasury", [gen(g), myAddr], $("wdMsg"), `withdraw_treasury (${g} GEN)`);
+});
+
+$("reloadBtn").addEventListener("click", loadAll);
+$("jumpBtn").addEventListener("click", () => { const v = $("jumpId").value; if (v) openProposal(Number(v)); });
+
+$("footLinks").innerHTML = `contract <a href="${EXPLORER}" target="_blank" rel="noopener">${ADDR}</a> · <a href="${REPO}" target="_blank" rel="noopener">source</a><br />`;
+loadAll();
+</script>
+</body>
+</html>
