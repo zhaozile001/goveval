@@ -34,7 +34,7 @@ deterministic and real.
 `contracts/goveval.py` — deployed on **Bradbury**.
 
 ```
-0x65A63336f432f9F6c780Adae6E32378665c26221
+0xe3b763483C742B75f66d024c6E1c6f69Ec995859
 ```
 
 ### Money flow
@@ -44,16 +44,23 @@ deterministic and real.
 | 1 | `fund_treasury()` — **payable** | Funder → contract custody, credited to `treasury` |
 | 2 | `submit_proposal(title, category, url, requested)` — **payable** | Applicant → contract custody, booked as the proposal's `stake` (anti-spam bond) |
 | 3 | `evaluate_proposal(id)` | No funds move. `gl.nondet.web.get` fetches the proposal, `exec_prompt` returns `{approved, score, reason, confidence}` |
-| 4a | `fund_proposal(id)` — admin | `treasury -= requested`; grant paid to the author **and** the bond returned, both via `emit_transfer(..., on='finalized')` |
-| 4b | `reject_proposal(id)` — admin | The bond is slashed: `treasury += stake` |
+| 4a | `fund_proposal(id)` — **permissionless** | `treasury -= requested`, `committed -= requested`; grant paid to the author **and** the bond returned, both via `emit_transfer(..., on='finalized')` |
+| 4b | `reject_proposal(id)` — **permissionless, idempotent** | The bond is slashed: `treasury += stake`, **once only** |
 | 5 | `withdraw_treasury(amount, to)` — admin | Unallocated treasury leaves the contract |
 
 ### Guarantees the contract enforces
 
 - A grant can never exceed the treasury (`Treasury does not hold enough for this grant`).
 - A proposal can only be evaluated once, and only while `OPEN`.
-- Only the admin (the deployer) can pay a grant, slash a bond, or withdraw treasury.
-- A bond is always settled exactly once — returned on `fund_proposal`, or slashed on `reject_proposal`.
+- **Bond settlement is idempotent.** `reject_proposal` reverts with `Bond already settled` on a
+  second call, so a replayed transaction can never credit the same stake twice. `fund_proposal`
+  likewise reverts with `Grant already paid out`.
+- **Approved grants are protected from withdrawal.** `evaluate_proposal` registers an approved grant
+  in `committed`; `withdraw_treasury` can only ever take `treasury - committed`, so a withdrawal can
+  never leave an approved liability unpayable (`Amount exceeds the uncommitted treasury`).
+- **Settlement is permissionless.** Once the jury has ruled, *anyone* — the applicant included — can
+  call `fund_proposal` or `reject_proposal`. An idle admin cannot stall a bond or an approved grant.
+- Only the admin can withdraw treasury (and only the uncommitted part).
 - The jury's `score` is clamped to 0–100 before it is stored.
 
 ---
@@ -77,12 +84,16 @@ pytest tests/direct/ -v
 ```
 
 ```
-17 passed
+27 passed
 ```
 
 The suite covers treasury funding, proposal validation, the one-shot evaluation rule, the score
-clamp, admin-only payouts, the treasury cap on grants, bond settlement on both paths, and a full
-fund → propose → review → grant → withdraw lifecycle.
+clamp, the treasury cap on grants, bond settlement on both paths, and a full
+fund → propose → review → grant → withdraw lifecycle — plus, from the review round:
+**replay rejection** for both `reject_proposal` and `fund_proposal`, **single-settlement** per bond,
+**committed-grant protection** against treasury withdrawal, **permissionless settlement** (so an idle
+admin cannot stall anything), and a test proving every bond and approved liability has a single,
+reachable settlement path.
 
 Note: the direct VM does not model the contract's own GEN balance, so the tests assert the contract's
 internal accounting. The actual movement of GEN is verified end-to-end on Bradbury (below).

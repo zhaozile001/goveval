@@ -53,8 +53,8 @@
   .hero h2 em{font-style:normal;color:var(--violet)}
   .hero h2 i{font-style:normal;color:var(--cyan)}
   .hero p{color:var(--mut);font-size:14.5px;line-height:1.65;margin-top:10px;max-width:800px}
-  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0 8px}
-  @media(max-width:780px){.stats{grid-template-columns:1fr 1fr}}
+  .stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:20px 0 8px}
+  @media(max-width:900px){.stats{grid-template-columns:1fr 1fr}}
   .st{background:linear-gradient(160deg,var(--card),var(--surface));border:1px solid var(--line);
       border-radius:14px;padding:15px}
   .st .k{font-family:'Fira Code',monospace;font-size:10px;color:var(--faint);letter-spacing:.5px}
@@ -150,7 +150,8 @@
     <div class="st"><div class="k">TREASURY</div><div class="n" id="sTreasury">—<small>GEN</small></div></div>
     <div class="st"><div class="k">PROPOSALS</div><div class="n" id="sCount">—</div></div>
     <div class="st"><div class="k">APPROVED</div><div class="n" id="sApproved">—</div></div>
-    <div class="st"><div class="k">GRANTED OUT</div><div class="n" id="sGranted">—<small>GEN</small></div></div>
+    <div class="st"><div class="k">COMMITTED (approved, unpaid)</div><div class="n" id="sCommitted">—<small>GEN</small></div></div>
+    <div class="st"><div class="k">WITHDRAWABLE</div><div class="n" id="sWithdrawable">—<small>GEN</small></div></div>
   </div>
 
   <div class="sec">
@@ -212,7 +213,7 @@
 
   <div class="sec"><h3>Treasury admin</h3></div>
   <div class="card">
-    <h4>Withdraw unallocated treasury <span>· admin only</span></h4>
+    <h4>Withdraw uncommitted treasury <span>· admin only · approved grants are protected</span></h4>
     <div class="row">
       <div><label>AMOUNT (GEN)</label><input id="fWdraw" type="number" step="0.01" placeholder="0.2" /></div>
       <div style="display:flex;align-items:flex-end"><button class="warn" id="wdrawBtn">withdraw_treasury</button></div>
@@ -226,8 +227,8 @@
       <li>Anyone calls <b>fund_treasury</b> (payable) — the GEN becomes contract custody.</li>
       <li>An applicant calls <b>submit_proposal</b> (payable) — the sent GEN is the anti-spam bond.</li>
       <li><b>evaluate_proposal</b> runs the jury: it fetches the proposal URL on-chain, rules against the funding standards and returns a 0–100 score.</li>
-      <li>The admin either <b>fund_proposal</b> (treasury pays the grant, the bond goes back) or <b>reject_proposal</b> (the bond is slashed into the treasury).</li>
-      <li>The admin can <b>withdraw_treasury</b> at any time. No bond or grant can get stuck: every path ends in a real transfer.</li>
+      <li>Once the jury has ruled, <b>anyone</b> can settle: <b>fund_proposal</b> pays an approved grant and returns its bond, <b>reject_proposal</b> slashes a rejected bond. An idle admin cannot stall either, and each bond settles exactly once.</li>
+      <li>The admin can <b>withdraw_treasury</b>, but only the <i>uncommitted</i> balance — approved-but-unpaid grants are excluded, so a withdrawal can never leave an approved liability unpayable.</li>
     </ol>
   </div>
 
@@ -238,7 +239,7 @@
 import { createClient } from "https://esm.sh/genlayer-js@0.7.0";
 import { testnetBradbury } from "https://esm.sh/genlayer-js@0.7.0/chains";
 
-const ADDR = "0x65A63336f432f9F6c780Adae6E32378665c26221";
+const ADDR = "0xe3b763483C742B75f66d024c6E1c6f69Ec995859";
 const REPO = "https://github.com/zhaozile001/goveval";
 const EXPLORER = "https://explorer-bradbury.genlayer.com/address/" + ADDR;
 // ------------------------------------------------------------------------
@@ -293,11 +294,16 @@ async function renderDetail(p) {
     ? `Jury: ${esc(p.verdict_reason)}${p.confidence ? ` <span style="color:var(--faint);font-style:normal">(confidence: ${esc(p.confidence)})</span>` : ""}`
     : `Not reviewed yet.`;
 
-  const isAdmin = myAddr && adminAddr && myAddr.toLowerCase() === adminAddr.toLowerCase();
-  const treasury = Number(await readClient.readContract({ address: ADDR, functionName: "get_treasury", args: [] }).then((t) => t.treasury).catch(() => 0));
+  const t = await readClient.readContract({ address: ADDR, functionName: "get_treasury", args: [] }).catch(() => null);
+  const treasury = t ? Number(t.treasury) : 0;
+  const committed = t ? Number(t.committed) : 0;
+  // settling is permissionless on purpose: once the jury has ruled, anyone can force the
+  // payout or the slash, so an idle admin cannot strand a bond or an approved grant
   $("dEvalBtn").disabled = st !== 0;
-  $("dFundBtn").disabled = !(isAdmin && st === 1 && treasury >= Number(p.requested));
-  $("dRejectBtn").disabled = !(isAdmin && st === 2);
+  $("dFundBtn").disabled = !(st === 1 && treasury >= Number(p.requested) && !p.stake_settled);
+  $("dRejectBtn").disabled = !(st === 2 && !p.stake_settled);
+  $("dFundBtn").title = st === 1 ? "Anyone can force this payout" : "Only approved proposals can be paid";
+  $("dRejectBtn").title = st === 2 ? "Anyone can force this slash" : "Only rejected proposals can be slashed";
   renderList();
 }
 
@@ -317,7 +323,8 @@ async function loadAll() {
     $("sTreasury").innerHTML = `${eth(t.treasury)}<small>GEN</small>`;
     $("sCount").textContent = count;
     $("sApproved").textContent = proposals.filter((p) => Number(p.state) === 1 || Number(p.state) === 3).length;
-    $("sGranted").innerHTML = `${eth(granted)}<small>GEN</small>`;
+    if ($("sCommitted")) $("sCommitted").innerHTML = `${eth(t.committed)}<small>GEN</small>`;
+    if ($("sWithdrawable")) $("sWithdrawable").innerHTML = `${eth(t.withdrawable !== undefined ? t.withdrawable : Number(t.treasury) - Number(t.committed))}<small>GEN</small>`;
     $("listNote").textContent = `· ${count} on file`;
     if (selected) { const a = proposals.find((p) => Number(p.id) === selected); if (a) await renderDetail(a); }
   } catch (e) {
