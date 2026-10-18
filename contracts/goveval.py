@@ -52,11 +52,13 @@ class GovEval(gl.Contract):
     proposals: TreeMap[u256, Proposal]
     next_id: u256
     treasury: u256
+    committed: u256          # grants already approved by the jury but not yet paid out
     admin: Address
 
     def __init__(self):
         self.next_id = u256(1)
         self.treasury = u256(0)
+        self.committed = u256(0)
         self.admin = gl.message.sender_address
 
     # -------------------------------------------------------- internals ----
@@ -101,6 +103,8 @@ class GovEval(gl.Contract):
     def get_treasury(self) -> dict:
         return {
             "treasury": self.treasury,
+            "committed": self.committed,
+            "withdrawable": self.treasury - self.committed,
             "contract_balance": self.balance,
             "admin": "0x" + self._addr_bytes(self.admin).hex(),
             "proposal_count": self.next_id - u256(1),
@@ -191,7 +195,7 @@ class GovEval(gl.Contract):
         stake_mem = int(p.stake)
         treasury_mem = int(self.treasury)
 
-        def _fetch_text(url: str, limit: int = 1200) -> str:
+        def _fetch_text(url: str, limit: int = 3000) -> str:
             try:
                 resp = gl.nondet.web.get(url)
                 if isinstance(resp, bytes):
@@ -257,22 +261,33 @@ class GovEval(gl.Contract):
         if score_val > 100:
             score_val = 100
 
-        p.state = u8(1) if bool(ok) else u8(2)
+        approved = bool(ok)
+        p.state = u8(1) if approved else u8(2)
+        if approved:
+            # the jury just approved this grant: it is now a liability the treasury must honour
+            self.committed = self.committed + p.requested
         p.score = u256(score_val)
         p.verdict_reason = str(result.get("reason", ""))
         p.confidence = str(result.get("confidence", ""))
 
     @gl.public.write
     def fund_proposal(self, proposal_id: u256):
-        """Treasury admin pays an approved proposal and returns the applicant's bond."""
-        self._only_admin()
+        """Pay an approved proposal and return the applicant's bond.
+
+        Permissionless on purpose: once the jury has approved the grant it is a liability of the
+        treasury, so *anyone* — the applicant included — can force it to be settled. The admin
+        cannot stall an approved grant by simply not calling this.
+        """
         p = self._prop(proposal_id)
+        if p.stake_settled:
+            raise gl.vm.UserError("Grant already paid out")
         if p.state != u8(1):
             raise gl.vm.UserError("Proposal is not approved")
         if int(p.requested) > int(self.treasury):
             raise gl.vm.UserError("Treasury does not hold enough for this grant")
 
         self.treasury = self.treasury - p.requested
+        self.committed = self.committed - p.requested
         p.state = u8(3)                  # FUNDED
         p.stake_settled = True
         self._pay(p.author, p.requested)
@@ -280,23 +295,36 @@ class GovEval(gl.Contract):
 
     @gl.public.write
     def reject_proposal(self, proposal_id: u256):
-        """Treasury admin settles a rejected proposal: the bond is slashed into the treasury."""
-        self._only_admin()
+        """Settle a rejected proposal: the bond is slashed into the treasury.
+
+        Idempotent — the bond can only be credited once. Also permissionless for the same reason
+        as ``fund_proposal``: the jury already decided, so nobody should be able to stall the
+        settlement by refusing to call it.
+        """
         p = self._prop(proposal_id)
         if p.state != u8(2):
             raise gl.vm.UserError("Proposal is not rejected")
+        if p.stake_settled:
+            raise gl.vm.UserError("Bond already settled")
 
         p.stake_settled = True
         self.treasury = self.treasury + p.stake
 
     @gl.public.write
     def withdraw_treasury(self, amount: u256, to: Address):
-        """Treasury admin withdraws unallocated treasury funds."""
+        """The admin withdraws only the *uncommitted* treasury.
+
+        Approved-but-unpaid grants are excluded, so a withdrawal can never leave an approved
+        liability unpayable.
+        """
         self._only_admin()
         if amount <= u256(0):
             raise gl.vm.UserError("Amount must be positive")
-        if int(amount) > int(self.treasury):
-            raise gl.vm.UserError("Not enough unallocated treasury")
+        withdrawable = int(self.treasury) - int(self.committed)
+        if withdrawable < 0:
+            withdrawable = 0
+        if int(amount) > withdrawable:
+            raise gl.vm.UserError("Amount exceeds the uncommitted treasury")
 
         self.treasury = self.treasury - amount
         self._pay(self._to_addr(to), amount)
