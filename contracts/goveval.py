@@ -262,13 +262,55 @@ class GovEval(gl.Contract):
             score_val = 100
 
         approved = bool(ok)
-        p.state = u8(1) if approved else u8(2)
-        if approved:
-            # the jury just approved this grant: it is now a liability the treasury must honour
-            self.committed = self.committed + p.requested
         p.score = u256(score_val)
         p.verdict_reason = str(result.get("reason", ""))
         p.confidence = str(result.get("confidence", ""))
+
+        if not approved:
+            p.state = u8(2)                     # REJECTED
+            return
+
+        # Deterministic solvency check: an approval only becomes a payable liability when the
+        # treasury can cover the aggregate of ALL outstanding approvals. Without this, several
+        # individually-approvable grants could total more than the treasury holds and some of them
+        # would be approved yet unpayable.
+        if int(self.committed) + int(p.requested) > int(self.treasury):
+            p.state = u8(5)                     # UNFUNDED - jury liked it, treasury cannot cover it
+            p.verdict_reason = (
+                "Jury approved, but the treasury cannot cover this grant: committed "
+                + str(int(self.committed)) + " + requested " + str(int(p.requested))
+                + " exceeds treasury " + str(int(self.treasury)) + ". Top up and activate."
+            )
+            return
+
+        p.state = u8(1)                         # APPROVED - a fully funded liability
+        self.committed = self.committed + p.requested
+
+    @gl.public.write
+    def activate_proposal(self, proposal_id: u256):
+        """Promote an UNFUNDED proposal to a payable liability once the treasury can cover it.
+
+        Permissionless: the applicant can activate her own grant after anyone tops the treasury up,
+        so an approved-by-quality proposal never depends on admin goodwill to become payable.
+        """
+        p = self._prop(proposal_id)
+        if p.state != u8(5):
+            raise gl.vm.UserError("Proposal is not awaiting funding")
+        if int(self.committed) + int(p.requested) > int(self.treasury):
+            raise gl.vm.UserError("Treasury still cannot cover this grant")
+        p.state = u8(1)                         # APPROVED
+        p.verdict_reason = "Activated after the treasury could cover this grant."
+        self.committed = self.committed + p.requested
+
+    @gl.public.view
+    def get_solvency(self) -> dict:
+        """Aggregate solvency view: every approved liability is fully backed by the treasury."""
+        return {
+            "treasury": self.treasury,
+            "committed": self.committed,
+            "withdrawable": self.treasury - self.committed,
+            "solvent": int(self.committed) <= int(self.treasury),
+        }
 
     @gl.public.write
     def fund_proposal(self, proposal_id: u256):
