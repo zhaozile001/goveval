@@ -180,6 +180,7 @@
         <button class="solid" id="dFundBtn">Fund it</button>
         <button class="danger" id="dRejectBtn">Slash the bond</button>
         <button class="warn" id="dActivateBtn">Activate (top up first)</button>
+        <button class="ghost" id="dReclaimBtn">Reclaim bond</button>
       </div>
       <div class="msg" id="dMsg"></div>
     </div>
@@ -231,6 +232,7 @@
       <li><b>evaluate_proposal</b> runs the jury: it fetches the proposal URL on-chain, rules against the funding standards and returns a 0–100 score.</li>
       <li>Once the jury has ruled, <b>anyone</b> can settle: <b>fund_proposal</b> pays an approved grant and returns its bond, <b>reject_proposal</b> slashes a rejected bond. An idle admin cannot stall either, and each bond settles exactly once.</li>
       <li><b>evaluate_proposal</b> enforces aggregate solvency: an approval only becomes a payable liability when <code>committed + requested ≤ treasury</code>. Otherwise the proposal is <b>UNFUNDED</b> (jury approved, treasury cannot cover) and anyone can <b>activate_proposal</b> after a top-up.</li>
+      <li>An UNFUNDED proposal's bond is never stranded: the applicant can call <b>reclaim_unfunded_bond</b> at any time — no treasury top-up needed. Reclaiming voids the grant, so nobody collects both.</li>
       <li>The admin can <b>withdraw_treasury</b>, but only the <i>uncommitted</i> balance — approved-but-unpaid grants are excluded, so a withdrawal can never leave an approved liability unpayable.</li>
     </ol>
   </div>
@@ -242,12 +244,12 @@
 import { createClient } from "https://esm.sh/genlayer-js@0.7.0";
 import { testnetBradbury } from "https://esm.sh/genlayer-js@0.7.0/chains";
 
-const ADDR = "0x0Df9f74Ba56ae7f6cA9f93C618E9e5Ef9aaE64B4";
+const ADDR = "0xadbb62e3d1611b1f848c8fea33d1191f32a82a4e";
 const REPO = "https://github.com/zhaozile001/goveval";
 const EXPLORER = "https://explorer-bradbury.genlayer.com/address/" + ADDR;
 // ------------------------------------------------------------------------
 
-const PSTATE = ["OPEN", "APPROVED", "REJECTED", "FUNDED", "?", "UNFUNDED"];
+const PSTATE = ["OPEN", "APPROVED", "REJECTED", "FUNDED", "?", "UNFUNDED", "WITHDRAWN"];
 const $ = (id) => document.getElementById(id);
 const readClient = createClient({ chain: testnetBradbury });
 let writeClient = null, myAddr = null, selected = null, proposals = [], adminAddr = null;
@@ -306,6 +308,7 @@ async function renderDetail(p) {
   $("dFundBtn").disabled = !(st === 1 && treasury >= Number(p.requested) && !p.stake_settled);
   $("dRejectBtn").disabled = !(st === 2 && !p.stake_settled);
   if ($("dActivateBtn")) $("dActivateBtn").disabled = (st !== 5);
+  if ($("dReclaimBtn")) $("dReclaimBtn").disabled = !(st === 5 && !p.stake_settled);
   $("dFundBtn").title = st === 1 ? "Anyone can force this payout" : "Only approved proposals can be paid";
   $("dRejectBtn").title = st === 2 ? "Anyone can force this slash" : "Only rejected proposals can be slashed";
   renderList();
@@ -398,6 +401,7 @@ $("dEvalBtn").addEventListener("click", () => { if (selected) write("evaluate_pr
 $("dFundBtn").addEventListener("click", () => { if (selected) write("fund_proposal", [BigInt(selected)], $("dMsg"), "fund_proposal (treasury pays the grant, bond returned)"); });
 $("dRejectBtn").addEventListener("click", () => { if (selected) write("reject_proposal", [BigInt(selected)], $("dMsg"), "reject_proposal (bond slashed into the treasury)"); });
 $("dActivateBtn").addEventListener("click", () => { if (selected) write("activate_proposal", [BigInt(selected)], $("dMsg"), "activate_proposal (promotes an UNFUNDED grant once the treasury can cover it)"); });
+$("dReclaimBtn").addEventListener("click", () => { if (selected) write("reclaim_unfunded_bond", [BigInt(selected)], $("dMsg"), "reclaim_unfunded_bond (applicant recovers the bond; the grant is voided)"); });
 
 $("wdrawBtn").addEventListener("click", () => {
   const g = $("fWdraw").value;

@@ -34,7 +34,7 @@ deterministic and real.
 `contracts/goveval.py` — deployed on **Bradbury**.
 
 ```
-0x0Df9f74Ba56ae7f6cA9f93C618E9e5Ef9aaE64B4
+0xadBb62E3d1611b1f848C8fEA33D1191f32A82a4e
 ```
 
 ### Money flow
@@ -46,6 +46,7 @@ deterministic and real.
 | 3 | `evaluate_proposal(id)` | No funds move. `gl.nondet.web.get` fetches the proposal, `exec_prompt` returns `{approved, score, reason, confidence}` |
 | 4a | `fund_proposal(id)` — **permissionless** | `treasury -= requested`, `committed -= requested`; grant paid to the author **and** the bond returned, both via `emit_transfer(..., on='finalized')` |
 | 4b | `reject_proposal(id)` — **permissionless, idempotent** | The bond is slashed: `treasury += stake`, **once only** |
+| 4c | `reclaim_unfunded_bond(id)` — applicant only, no funds needed from the treasury | An `UNFUNDED` proposal's bond (and the grant) is voided: the bond returned, state `WITHDRAWN`, **once only** |
 | 5 | `withdraw_treasury(amount, to)` — admin | Unallocated treasury leaves the contract |
 
 ### Guarantees the contract enforces
@@ -84,7 +85,7 @@ pytest tests/direct/ -v
 ```
 
 ```
-33 passed
+38 passed
 ```
 
 The suite covers treasury funding, proposal validation, the one-shot evaluation rule, the score
@@ -165,11 +166,16 @@ else if approved:
 **The invariant `committed <= treasury` therefore holds at all times**, so every `APPROVED` grant is
 fully payable. It is exposed by `get_solvency()` and asserted throughout the test suite.
 
-`UNFUNDED` is not a dead end: `activate_proposal` promotes it to `APPROVED` once a top-up makes it
-affordable, and it is **permissionless** — the applicant can activate her own grant without relying
-on the admin.
+`UNFUNDED` is not a dead end, and it is never a trap for the applicant's bond either. There are two
+mutually exclusive ways out:
 
-### Regression tests added for this round (33 total)
+- `activate_proposal` promotes it to `APPROVED` once a top-up makes it affordable, and it is
+  **permissionless** — the applicant can activate her own grant without relying on the admin.
+- `reclaim_unfunded_bond` returns the bond **immediately and with no treasury top-up at all**. It is
+  applicant-only, bounded to state `UNFUNDED`, and duplicate-safe. Reclaiming moves the proposal to
+  `WITHDRAWN`, which voids the grant, so a bond can never be reclaimed *and* collected afterwards.
+
+### Regression tests added for this round (38 total)
 
 | Case | Test |
 |---|---|
@@ -179,19 +185,35 @@ on the admin.
 | every approved liability is fully payable | `test_every_approved_liability_is_fully_payable` |
 | withdrawal never breaks solvency | `test_solvency_invariant_survives_withdrawals` |
 | activation guard | `test_activate_requires_unfunded_state` |
+| **bond recoverable with no top-up at all** | `test_unfunded_bond_recoverable_without_any_topup` |
+| **reclaim is duplicate-safe** | `test_unfunded_bond_reclaim_is_duplicate_safe` |
+| **reclaim is applicant-only** | `test_unfunded_bond_reclaim_is_applicant_only` |
+| **a reclaimed grant cannot be activated later** | `test_reclaimed_unfunded_grant_cannot_be_activated` |
+| **reclaim is bounded to UNFUNDED** | `test_reclaim_only_applies_to_unfunded` |
 
 ### Source-matched deployment evidence
 
-Bradbury `0x0Df9f74Ba56ae7f6cA9f93C618E9e5Ef9aaE64B4`, source **15,101 bytes** (identical to
+Bradbury `0xadBb62E3d1611b1f848C8fEA33D1191f32A82a4e`, source **16,629 bytes** (identical to
 `contracts/goveval.py`):
 
 ```
-treasury 1.0 GEN
-  proposal A (0.7) -> APPROVED   committed 0.7  solvent true
-  proposal B (0.7) -> UNFUNDED   committed 0.7  solvent true   (fund_proposal reverts)
-top-up 1.0 GEN  (treasury 2.0)
-  activate_proposal B -> APPROVED  committed 1.4  solvent true
-  fund_proposal A, B -> both FUNDED  committed 0
+deploy                          0x4526ec2bba2a98fca7fc8a84de01194005c0e1f11a379fe1873cb970d06c0b45
+
+treasury 0.3 GEN, applicant asks 0.8 GEN
+  evaluate -> UNFUNDED, score 90   (jury approved; treasury cannot cover it)
+  treasury still 0.3 GEN           (recovery needed no additional funding)
+  reclaim_unfunded_bond            bond returned, state WITHDRAWN, stake_settled true
+  replay reclaim                   reverted
+  top-up 2.0 GEN then activate     reverted   (grant was voided, cannot be collected)
+  committed stayed 0 throughout
 ```
 
-`pytest tests/direct/ -v` → **33 passed**
+`pytest tests/direct/ -v` → **38 passed**
+
+### Prompt correction
+
+The jury prompt previously instructed the model to reject a proposal that "asks for more than the
+treasury holds". That duplicated — and contradicted — the deterministic solvency check, because it
+made `UNFUNDED` unreachable: a grant the treasury could not cover was simply rejected instead of
+being recorded as approved-but-unfunded. The prompt no longer mentions the treasury balance at all;
+funding sufficiency is enforced by the contract, not by the model.
