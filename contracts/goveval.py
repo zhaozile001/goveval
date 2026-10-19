@@ -222,7 +222,10 @@ class GovEval(gl.Contract):
                 "Judge the proposal ONLY on the fetched text above. Approve it when it states a "
                 "concrete deliverable, a plausible budget for that deliverable, and something "
                 "the DAO actually needs. Reject it when the text is missing, unreachable, empty, "
-                "purely promotional, or asks for more than the treasury holds.\n\n"
+                "or purely promotional. Do NOT consider the treasury balance: whether the treasury "
+                "can currently cover an approved grant is enforced deterministically by the contract, "
+                "not by you. An approval you issue may therefore be recorded as UNFUNDED rather than "
+                "paid - that is expected and correct.\n\n"
                 'Respond as JSON with exactly these keys:\n'
                 '- "approved": true or false\n'
                 '- "score": integer 0-100 quality score\n'
@@ -351,6 +354,29 @@ class GovEval(gl.Contract):
 
         p.stake_settled = True
         self.treasury = self.treasury + p.stake
+
+    @gl.public.write
+    def reclaim_unfunded_bond(self, proposal_id: u256):
+        """Recover the bond of an UNFUNDED proposal — no treasury top-up required.
+
+        Without this an UNFUNDED proposal would hold the applicant's bond forever: ``fund_proposal``
+        only accepts APPROVED and ``reject_proposal`` only accepts REJECTED, so neither settlement
+        method reaches state 5. This path is bounded (UNFUNDED only), duplicate-safe (the settled
+        flag is checked first), applicant-only, and it **voids the grant** (state 6) so nobody can
+        reclaim the bond and then still activate and collect the grant.
+        """
+        p = self._prop(proposal_id)
+        if p.stake_settled:
+            raise gl.vm.UserError("Bond already settled")
+        if int(p.state) != 5:
+            raise gl.vm.UserError("Proposal is not unfunded")
+        if self._addr_bytes(gl.message.sender_address) != self._addr_bytes(p.author):
+            raise gl.vm.UserError("Only the applicant can reclaim this bond")
+
+        p.stake_settled = True
+        p.state = u8(6)                 # WITHDRAWN - the grant is void
+        p.verdict_reason = "Bond reclaimed by the applicant; the grant is void."
+        self._pay(p.author, p.stake)
 
     @gl.public.write
     def withdraw_treasury(self, amount: u256, to: Address):
