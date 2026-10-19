@@ -204,9 +204,12 @@ def test_cannot_fund_beyond_treasury(direct_vm, direct_deploy, direct_alice, dir
     direct_vm.sender = direct_alice
     contract.evaluate_proposal(pid)
 
-    with direct_vm.expect_revert("Treasury does not hold enough for this grant"):
+    # the solvency check now fires at approval time: the proposal is UNFUNDED, not APPROVED
+    assert int(contract.get_proposal(pid)["state"]) == 5      # UNFUNDED
+    assert int(contract.get_treasury()["committed"]) == 0     # no liability registered
+    with direct_vm.expect_revert("Proposal is not approved"):
         contract.fund_proposal(pid)
-    assert int(contract.get_treasury()["treasury"]) == 300   # nothing moved
+    assert int(contract.get_treasury()["treasury"]) == 300    # nothing moved
 
 
 def test_fund_requires_approved_proposal(direct_vm, direct_deploy, direct_alice, direct_bob):
@@ -499,3 +502,142 @@ def test_cannot_settle_before_the_jury_rules(direct_vm, direct_deploy, direct_al
         contract.fund_proposal(pid)
     with direct_vm.expect_revert("Proposal is not rejected"):
         contract.reject_proposal(pid)
+
+# ================================================= 8. review round 2: aggregate solvency
+
+def test_competing_approvals_never_exceed_the_treasury(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """Two individually-affordable grants must not be approved if together they exceed the treasury."""
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+    _fund(direct_vm, contract, direct_bob, 1000)
+
+    a = _propose(direct_vm, contract, direct_alice, requested=700, stake=100,
+                 title="First", url="https://example.com/first")
+    b = _propose(direct_vm, contract, direct_bob, requested=700, stake=100,
+                 title="Second", url="https://example.com/second")
+
+    direct_vm.mock_web(r".*example\.com/first.*", {"status": 200, "body": "<html>great first proposal</html>"})
+    direct_vm.mock_web(r".*example\.com/second.*", {"status": 200, "body": "<html>great second proposal</html>"})
+    direct_vm.mock_llm(r".*great first proposal.*", {"approved": True, "score": 90, "reason": "Good.", "confidence": "high"})
+    direct_vm.mock_llm(r".*great second proposal.*", {"approved": True, "score": 90, "reason": "Good.", "confidence": "high"})
+
+    direct_vm.sender = direct_alice
+    contract.evaluate_proposal(a)               # 700 <= 1000 -> APPROVED
+    contract.evaluate_proposal(b)               # 700 + 700 > 1000 -> UNFUNDED
+
+    assert int(contract.get_proposal(a)["state"]) == 1     # APPROVED
+    assert int(contract.get_proposal(b)["state"]) == 5     # UNFUNDED
+    sol = contract.get_solvency()
+    assert int(sol["committed"]) == 700
+    assert sol["solvent"] is True                          # committed never exceeds treasury
+    assert int(sol["treasury"]) == 1000
+
+
+def test_unfunded_proposal_cannot_be_paid_directly(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+    _fund(direct_vm, contract, direct_bob, 500)
+    pid = _propose(direct_vm, contract, direct_alice, requested=800, stake=100)
+    direct_vm.mock_web(r".*", {"status": 200, "body": "<html>good</html>"})
+    direct_vm.mock_llm(r".*", {"approved": True, "score": 88, "reason": "Good.", "confidence": "high"})
+    direct_vm.sender = direct_alice
+    contract.evaluate_proposal(pid)
+
+    assert int(contract.get_proposal(pid)["state"]) == 5
+    with direct_vm.expect_revert("Proposal is not approved"):
+        contract.fund_proposal(pid)
+
+
+def test_unfunded_proposal_activates_after_topup(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """A quality-approved grant becomes payable as soon as the treasury can cover it."""
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+    _fund(direct_vm, contract, direct_bob, 500)
+    pid = _propose(direct_vm, contract, direct_alice, requested=800, stake=100)
+    direct_vm.mock_web(r".*", {"status": 200, "body": "<html>good</html>"})
+    direct_vm.mock_llm(r".*", {"approved": True, "score": 88, "reason": "Good.", "confidence": "high"})
+    direct_vm.sender = direct_alice
+    contract.evaluate_proposal(pid)
+    assert int(contract.get_proposal(pid)["state"]) == 5
+
+    # cannot activate while still underfunded
+    with direct_vm.expect_revert("Treasury still cannot cover this grant"):
+        contract.activate_proposal(pid)
+
+    _fund(direct_vm, contract, direct_bob, 500)            # treasury now 1000
+    direct_vm.sender = direct_bob                          # anyone can activate, not just admin
+    contract.activate_proposal(pid)
+
+    assert int(contract.get_proposal(pid)["state"]) == 1
+    assert int(contract.get_solvency()["committed"]) == 800
+    contract.fund_proposal(pid)
+    assert int(contract.get_proposal(pid)["state"]) == 3   # FUNDED
+    assert int(contract.get_solvency()["committed"]) == 0
+
+
+def test_every_approved_liability_is_fully_payable(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """After any sequence of approvals, each APPROVED proposal can still be funded."""
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+    _fund(direct_vm, contract, direct_bob, 1000)
+
+    ids = []
+    for i, amt in enumerate([300, 300, 300, 300]):
+        ids.append(_propose(direct_vm, contract, direct_alice, requested=amt, stake=50,
+                            title="P" + str(i), url="https://example.com/p" + str(i)))
+
+    for i in range(4):
+        direct_vm.mock_web(r".*example\.com/p" + str(i) + ".*",
+                           {"status": 200, "body": "<html>proposal " + str(i) + " is fine</html>"})
+    for i in range(4):
+        direct_vm.mock_llm(r".*proposal " + str(i) + " is fine.*",
+                           {"approved": True, "score": 80, "reason": "Ok.", "confidence": "high"})
+
+    direct_vm.sender = direct_alice
+    for pid in ids:
+        contract.evaluate_proposal(pid)
+
+    # 300*3 = 900 approved (the 4th would be 1200 > 1000 -> UNFUNDED)
+    approved = [pid for pid in ids if int(contract.get_proposal(pid)["state"]) == 1]
+    unfunded = [pid for pid in ids if int(contract.get_proposal(pid)["state"]) == 5]
+    assert len(approved) == 3
+    assert len(unfunded) == 1
+    assert int(contract.get_solvency()["committed"]) == 900
+    assert contract.get_solvency()["solvent"] is True
+
+    # and every one of them really pays out
+    for pid in approved:
+        contract.fund_proposal(pid)
+        assert int(contract.get_proposal(pid)["state"]) == 3
+    assert int(contract.get_solvency()["committed"]) == 0
+
+
+def test_solvency_invariant_survives_withdrawals(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """Withdrawing the uncommitted excess can never make an approved liability unpayable."""
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+    _fund(direct_vm, contract, direct_bob, 1000)
+    pid = _propose(direct_vm, contract, direct_alice, requested=700, stake=100)
+    direct_vm.mock_web(r".*", {"status": 200, "body": "<html>ok</html>"})
+    direct_vm.mock_llm(r".*", {"approved": True, "score": 85, "reason": "Ok.", "confidence": "high"})
+    direct_vm.sender = direct_alice
+    contract.evaluate_proposal(pid)
+
+    sol = contract.get_solvency()
+    assert int(sol["withdrawable"]) == 300
+
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("Amount exceeds the uncommitted treasury"):
+        contract.withdraw_treasury(700, _addr(direct_alice))
+    contract.withdraw_treasury(300, _addr(direct_alice))
+
+    # the approved 700 is still fully backed and still payable
+    assert contract.get_solvency()["solvent"] is True
+    assert int(contract.get_solvency()["withdrawable"]) == 0
+    direct_vm.sender = direct_bob
+    contract.fund_proposal(pid)
+    assert int(contract.get_proposal(pid)["state"]) == 3
+
+
+def test_activate_requires_unfunded_state(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+    _fund(direct_vm, contract, direct_bob, 1000)
+    pid = _propose(direct_vm, contract, direct_alice, requested=300, stake=50)
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("Proposal is not awaiting funding"):
+        contract.activate_proposal(pid)          # still OPEN
