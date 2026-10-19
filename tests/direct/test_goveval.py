@@ -641,3 +641,93 @@ def test_activate_requires_unfunded_state(direct_vm, direct_deploy, direct_alice
     direct_vm.sender = direct_alice
     with direct_vm.expect_revert("Proposal is not awaiting funding"):
         contract.activate_proposal(pid)          # still OPEN
+
+# ================================================= 9. review round 3: UNFUNDED bond recovery
+
+def _make_unfunded(contract, direct_vm, direct_alice, direct_bob):
+    """Helper: create a proposal that comes back UNFUNDED (treasury too small)."""
+    _fund(direct_vm, contract, direct_bob, 300)
+    pid = _propose(direct_vm, contract, direct_alice, requested=800, stake=100)
+    direct_vm.mock_web(r".*", {"status": 200, "body": "<html>approved but unaffordable</html>"})
+    direct_vm.mock_llm(r".*", {"approved": True, "score": 88,
+                               "reason": "Good.", "confidence": "high"})
+    direct_vm.sender = direct_alice
+    contract.evaluate_proposal(pid)
+    assert int(contract.get_proposal(pid)["state"]) == 5      # UNFUNDED
+    return pid
+
+
+def test_unfunded_bond_recoverable_without_any_topup(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """The reviewer's exact case: no treasury top-up ever happens, the bond must still come back."""
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+    pid = _make_unfunded(contract, direct_vm, direct_alice, direct_bob)
+    assert not contract.get_proposal(pid)["stake_settled"]
+
+    # no fund_treasury call at all — recovery must not depend on new money
+    direct_vm.sender = direct_alice
+    contract.reclaim_unfunded_bond(pid)
+
+    p = contract.get_proposal(pid)
+    assert p["stake_settled"]
+    assert int(p["state"]) == 6                    # WITHDRAWN
+    assert int(contract.get_treasury()["treasury"]) == 300   # treasury untouched
+    assert int(contract.get_treasury()["committed"]) == 0
+
+
+def test_unfunded_bond_reclaim_is_duplicate_safe(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+    pid = _make_unfunded(contract, direct_vm, direct_alice, direct_bob)
+
+    direct_vm.sender = direct_alice
+    contract.reclaim_unfunded_bond(pid)
+    for _ in range(3):
+        with direct_vm.expect_revert("Bond already settled"):
+            contract.reclaim_unfunded_bond(pid)
+    assert int(contract.get_treasury()["treasury"]) == 300
+
+
+def test_unfunded_bond_reclaim_is_applicant_only(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+    pid = _make_unfunded(contract, direct_vm, direct_alice, direct_bob)
+    direct_vm.sender = direct_bob              # not the applicant, not the admin
+    with direct_vm.expect_revert("Only the applicant can reclaim this bond"):
+        contract.reclaim_unfunded_bond(pid)
+
+
+def test_reclaimed_unfunded_grant_cannot_be_activated(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """Recovering the bond voids the grant, so nobody collects both."""
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+    pid = _make_unfunded(contract, direct_vm, direct_alice, direct_bob)
+
+    direct_vm.sender = direct_alice
+    contract.reclaim_unfunded_bond(pid)
+
+    # top the treasury up generously — the grant is still void
+    _fund(direct_vm, contract, direct_bob, 2000)
+    with direct_vm.expect_revert("Proposal is not awaiting funding"):
+        contract.activate_proposal(pid)
+    # the bond is already settled, so the payout path refuses it too
+    with direct_vm.expect_revert("Grant already paid out"):
+        contract.fund_proposal(pid)
+
+
+def test_reclaim_only_applies_to_unfunded(direct_vm, direct_deploy, direct_alice, direct_bob):
+    """The recovery path is bounded: it cannot touch OPEN, APPROVED, REJECTED or FUNDED."""
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+
+    # OPEN
+    open_pid = _propose(direct_vm, contract, direct_alice, requested=100, stake=50)
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("Proposal is not unfunded"):
+        contract.reclaim_unfunded_bond(open_pid)
+
+    # APPROVED then FUNDED
+    _fund(direct_vm, contract, direct_bob, 1000)
+    ok_pid = _propose(direct_vm, contract, direct_alice, requested=100, stake=50)
+    direct_vm.mock_web(r".*", {"status": 200, "body": "<html>fine</html>"})
+    direct_vm.mock_llm(r".*", {"approved": True, "score": 80, "reason": "Ok.", "confidence": "high"})
+    contract.evaluate_proposal(ok_pid)
+    assert int(contract.get_proposal(ok_pid)["state"]) == 1
+    # bounded: the recovery path refuses an APPROVED proposal
+    with direct_vm.expect_revert("Proposal is not unfunded"):
+        contract.reclaim_unfunded_bond(ok_pid)
