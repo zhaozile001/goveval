@@ -152,6 +152,7 @@
     <div class="st"><div class="k">APPROVED</div><div class="n" id="sApproved">—</div></div>
     <div class="st"><div class="k">COMMITTED (approved, unpaid)</div><div class="n" id="sCommitted">—<small>GEN</small></div></div>
     <div class="st"><div class="k">WITHDRAWABLE</div><div class="n" id="sWithdrawable">—<small>GEN</small></div></div>
+    <div class="st"><div class="k">SOLVENT (committed ≤ treasury)</div><div class="n" id="sSolvent">—</div></div>
   </div>
 
   <div class="sec">
@@ -178,6 +179,7 @@
         <button class="cyan" id="dEvalBtn">Review with jury</button>
         <button class="solid" id="dFundBtn">Fund it</button>
         <button class="danger" id="dRejectBtn">Slash the bond</button>
+        <button class="warn" id="dActivateBtn">Activate (top up first)</button>
       </div>
       <div class="msg" id="dMsg"></div>
     </div>
@@ -228,6 +230,7 @@
       <li>An applicant calls <b>submit_proposal</b> (payable) — the sent GEN is the anti-spam bond.</li>
       <li><b>evaluate_proposal</b> runs the jury: it fetches the proposal URL on-chain, rules against the funding standards and returns a 0–100 score.</li>
       <li>Once the jury has ruled, <b>anyone</b> can settle: <b>fund_proposal</b> pays an approved grant and returns its bond, <b>reject_proposal</b> slashes a rejected bond. An idle admin cannot stall either, and each bond settles exactly once.</li>
+      <li><b>evaluate_proposal</b> enforces aggregate solvency: an approval only becomes a payable liability when <code>committed + requested ≤ treasury</code>. Otherwise the proposal is <b>UNFUNDED</b> (jury approved, treasury cannot cover) and anyone can <b>activate_proposal</b> after a top-up.</li>
       <li>The admin can <b>withdraw_treasury</b>, but only the <i>uncommitted</i> balance — approved-but-unpaid grants are excluded, so a withdrawal can never leave an approved liability unpayable.</li>
     </ol>
   </div>
@@ -239,12 +242,12 @@
 import { createClient } from "https://esm.sh/genlayer-js@0.7.0";
 import { testnetBradbury } from "https://esm.sh/genlayer-js@0.7.0/chains";
 
-const ADDR = "0xe3b763483C742B75f66d024c6E1c6f69Ec995859";
+const ADDR = "0x0Df9f74Ba56ae7f6cA9f93C618E9e5Ef9aaE64B4";
 const REPO = "https://github.com/zhaozile001/goveval";
 const EXPLORER = "https://explorer-bradbury.genlayer.com/address/" + ADDR;
 // ------------------------------------------------------------------------
 
-const PSTATE = ["OPEN", "APPROVED", "REJECTED", "FUNDED"];
+const PSTATE = ["OPEN", "APPROVED", "REJECTED", "FUNDED", "?", "UNFUNDED"];
 const $ = (id) => document.getElementById(id);
 const readClient = createClient({ chain: testnetBradbury });
 let writeClient = null, myAddr = null, selected = null, proposals = [], adminAddr = null;
@@ -302,6 +305,7 @@ async function renderDetail(p) {
   $("dEvalBtn").disabled = st !== 0;
   $("dFundBtn").disabled = !(st === 1 && treasury >= Number(p.requested) && !p.stake_settled);
   $("dRejectBtn").disabled = !(st === 2 && !p.stake_settled);
+  if ($("dActivateBtn")) $("dActivateBtn").disabled = (st !== 5);
   $("dFundBtn").title = st === 1 ? "Anyone can force this payout" : "Only approved proposals can be paid";
   $("dRejectBtn").title = st === 2 ? "Anyone can force this slash" : "Only rejected proposals can be slashed";
   renderList();
@@ -325,6 +329,10 @@ async function loadAll() {
     $("sApproved").textContent = proposals.filter((p) => Number(p.state) === 1 || Number(p.state) === 3).length;
     if ($("sCommitted")) $("sCommitted").innerHTML = `${eth(t.committed)}<small>GEN</small>`;
     if ($("sWithdrawable")) $("sWithdrawable").innerHTML = `${eth(t.withdrawable !== undefined ? t.withdrawable : Number(t.treasury) - Number(t.committed))}<small>GEN</small>`;
+    if ($("sSolvent")) {
+      const sv = (t.committed === undefined) ? true : Number(t.committed) <= Number(t.treasury);
+      $("sSolvent").innerHTML = sv ? '<span style="color:var(--ok)">YES</span>' : '<span style="color:var(--err)">NO</span>';
+    }
     $("listNote").textContent = `· ${count} on file`;
     if (selected) { const a = proposals.find((p) => Number(p.id) === selected); if (a) await renderDetail(a); }
   } catch (e) {
@@ -389,6 +397,7 @@ $("submitBtn").addEventListener("click", () => {
 $("dEvalBtn").addEventListener("click", () => { if (selected) write("evaluate_proposal", [BigInt(selected)], $("dMsg"), "evaluate_proposal (jury reads the proposal on-chain)"); });
 $("dFundBtn").addEventListener("click", () => { if (selected) write("fund_proposal", [BigInt(selected)], $("dMsg"), "fund_proposal (treasury pays the grant, bond returned)"); });
 $("dRejectBtn").addEventListener("click", () => { if (selected) write("reject_proposal", [BigInt(selected)], $("dMsg"), "reject_proposal (bond slashed into the treasury)"); });
+$("dActivateBtn").addEventListener("click", () => { if (selected) write("activate_proposal", [BigInt(selected)], $("dMsg"), "activate_proposal (promotes an UNFUNDED grant once the treasury can cover it)"); });
 
 $("wdrawBtn").addEventListener("click", () => {
   const g = $("fWdraw").value;

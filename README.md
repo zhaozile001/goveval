@@ -34,7 +34,7 @@ deterministic and real.
 `contracts/goveval.py` — deployed on **Bradbury**.
 
 ```
-0xe3b763483C742B75f66d024c6E1c6f69Ec995859
+0x0Df9f74Ba56ae7f6cA9f93C618E9e5Ef9aaE64B4
 ```
 
 ### Money flow
@@ -84,7 +84,7 @@ pytest tests/direct/ -v
 ```
 
 ```
-27 passed
+33 passed
 ```
 
 The suite covers treasury funding, proposal validation, the one-shot evaluation rule, the score
@@ -143,3 +143,55 @@ hashes produced by that run.
 ## License
 
 MIT
+
+---
+
+## v3 — aggregate solvency at approval
+
+The second review round found that `evaluate_proposal` registered an approval as a liability without
+checking whether the treasury could cover **all** of them: several individually-affordable grants
+could total more than the treasury held, leaving some approved yet unpayable.
+
+**v3 fixes this with a deterministic check inside `evaluate_proposal`:**
+
+```
+if approved and committed + requested <= treasury:
+    state = APPROVED,  committed += requested          # a fully funded liability
+else if approved:
+    state = UNFUNDED                                    # jury liked it, treasury cannot cover it
+    # verdict and score are kept, nothing is added to committed, fund_proposal refuses it
+```
+
+**The invariant `committed <= treasury` therefore holds at all times**, so every `APPROVED` grant is
+fully payable. It is exposed by `get_solvency()` and asserted throughout the test suite.
+
+`UNFUNDED` is not a dead end: `activate_proposal` promotes it to `APPROVED` once a top-up makes it
+affordable, and it is **permissionless** — the applicant can activate her own grant without relying
+on the admin.
+
+### Regression tests added for this round (33 total)
+
+| Case | Test |
+|---|---|
+| competing approvals cannot exceed the treasury | `test_competing_approvals_never_exceed_the_treasury` |
+| an UNFUNDED grant cannot be paid directly | `test_unfunded_proposal_cannot_be_paid_directly` |
+| activation after a top-up | `test_unfunded_proposal_activates_after_topup` |
+| every approved liability is fully payable | `test_every_approved_liability_is_fully_payable` |
+| withdrawal never breaks solvency | `test_solvency_invariant_survives_withdrawals` |
+| activation guard | `test_activate_requires_unfunded_state` |
+
+### Source-matched deployment evidence
+
+Bradbury `0x0Df9f74Ba56ae7f6cA9f93C618E9e5Ef9aaE64B4`, source **15,101 bytes** (identical to
+`contracts/goveval.py`):
+
+```
+treasury 1.0 GEN
+  proposal A (0.7) -> APPROVED   committed 0.7  solvent true
+  proposal B (0.7) -> UNFUNDED   committed 0.7  solvent true   (fund_proposal reverts)
+top-up 1.0 GEN  (treasury 2.0)
+  activate_proposal B -> APPROVED  committed 1.4  solvent true
+  fund_proposal A, B -> both FUNDED  committed 0
+```
+
+`pytest tests/direct/ -v` → **33 passed**
