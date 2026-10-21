@@ -461,7 +461,7 @@ $("connectBtn").addEventListener("click", async () => {
     writeClient = createClient({
       chain: testnetBradbury,
       account: myAddr,
-      provider: window.ethereum,
+      provider: activeProvider || window.ethereum,
     });
 
     $("netLabel").textContent = short(myAddr);
