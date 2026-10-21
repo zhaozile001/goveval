@@ -126,7 +126,7 @@
       <div class="mark">G</div>
       <div>
         <h1>GovEval</h1>
-        <div class="tag">TREASURY GRANTS · ON-CHAIN PROPOSAL REVIEW · BRADBURY</div>
+        <div class="tag">TREASURY GRANTS · ON-CHAIN PROPOSAL REVIEW · BRADBURY · build 08-02-pinned</div>
       </div>
     </div>
     <div class="wallet" style="flex-wrap:wrap;justify-content:flex-end">
@@ -376,11 +376,13 @@ async function openProposal(id) {
 const BRADBURY_HEX = "0x" + (4221).toString(16);
 
 function walletErr(e) {
-  const c = e && e.code;
+  const c = e && (e.code !== undefined ? e.code : (e.cause && e.cause.code));
   if (c === 4001) return "You rejected the request in your wallet.";
   if (c === -32002) return "A wallet request is already pending — open your wallet and confirm it.";
   if (c === 4902) return "Bradbury is not configured in your wallet.";
-  return (e && (e.message || String(e))) || "Unknown wallet error";
+  if (c === 4100) return "Wallet says this account/method is not authorised (4100). Reconnect, and make sure the wallet's currently selected account is the one holding GEN.";
+  const base = (e && (e.message || String(e))) || "Unknown wallet error";
+  return (c !== undefined && c !== null ? `[${c}] ` : "") + base;
 }
 
 async function ensureBradbury() {
@@ -426,6 +428,7 @@ function pickProvider() {
 
 let activeProvider = null;
 let activeWalletName = "";
+let usingLocalKey = false;
 
 $("connectBtn").addEventListener("click", async () => {
   const found = pickProvider();
@@ -457,11 +460,25 @@ $("connectBtn").addEventListener("click", async () => {
       return;
     }
 
-    // address as a string, provider separately — this is what makes signing go through the wallet
+    // No `account` here on purpose. genlayer-js decides whether to route a signing call through
+    // the wallet with `typeof config.account !== "object"`. Leaving it undefined keeps that true,
+    // so eth_sendTransaction goes to the wallet. The address object is supplied per call instead.
+    //
+    // `provider` is wrapped rather than passed raw: the library internally does
+    // `config.provider || window.ethereum`, and with more than one wallet installed that fallback
+    // can land on the wrong extension — which then answers 4100 "account not authorised".
+    // Pinning the exact provider the user connected with removes that failure mode entirely.
+    usingLocalKey = false;
+    const pinnedProvider = activeProvider || window.ethereum;
+    const forcedProvider = {
+      request: (args) => pinnedProvider.request(args),
+    };
+    if (pinnedProvider.on) forcedProvider.on = (...a) => pinnedProvider.on(...a);
+    if (pinnedProvider.removeListener) forcedProvider.removeListener = (...a) => pinnedProvider.removeListener(...a);
+
     writeClient = createClient({
       chain: testnetBradbury,
-      account: myAddr,
-      provider: activeProvider || window.ethereum,
+      provider: forcedProvider,
     });
 
     $("netLabel").textContent = short(myAddr);
@@ -498,6 +515,7 @@ async function connectWithKey() {
     const { createAccount } = await import("https://esm.sh/genlayer-js@1.1.8");
     const acct = createAccount(hex);
     myAddr = acct.address;
+    usingLocalKey = true;
     writeClient = createClient({ chain: testnetBradbury, account: acct });
     $("pkInput").value = "";
     $("netLabel").textContent = short(myAddr);
@@ -559,7 +577,11 @@ async function write(fn, args, el, label, value = 0n) {
   if (!writeClient) return msg(el, "Connect your wallet first.", "err");
   try {
     msg(el, `${label} → confirm in your wallet…`, "info");
-    const hash = await writeClient.writeContract({ address: ADDR, functionName: fn, args, value });
+    // Wallet path: pass a JSON-RPC account object so the SDK can fill `from`. Local-key path:
+    // omit it and let the client sign with its own private-key account.
+    const call = { address: ADDR, functionName: fn, args, value };
+    if (!usingLocalKey && myAddr) call.account = { address: myAddr, type: "json-rpc" };
+    const hash = await writeClient.writeContract(call);
     msg(el, `${label} submitted (${short(hash)}), waiting for finalization…`, "info");
     const ok = await waitFinal(hash, el, label);
     if (ok) await loadAll();
