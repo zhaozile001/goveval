@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GovEval · Wallet Diagnostics</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 32px 20px; font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: #0d1117; color: #c9d1d9;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; color: #58a6ff; font-weight: 600; }
+  .sub { color: #8b949e; font-size: 12px; margin-bottom: 24px; }
+  .step {
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 16px 18px; margin-bottom: 14px;
+  }
+  .step h2 { font-size: 13px; margin: 0 0 10px; color: #f0f6fc; font-weight: 600; }
+  .row { display: flex; gap: 10px; padding: 3px 0; }
+  .k { color: #8b949e; min-width: 200px; flex-shrink: 0; }
+  .v { word-break: break-all; }
+  .ok { color: #3fb950; }
+  .bad { color: #f85149; }
+  .warn { color: #d29922; }
+  button {
+    background: #238636; color: #fff; border: 0; border-radius: 6px;
+    padding: 9px 18px; font: inherit; cursor: pointer; margin-top: 8px;
+  }
+  button:hover { background: #2ea043; }
+  button:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+  pre {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    padding: 10px; overflow-x: auto; font-size: 12px; white-space: pre-wrap;
+    word-break: break-all; margin: 8px 0 0;
+  }
+  .verdict {
+    background: #1f2937; border-left: 3px solid #58a6ff; padding: 12px 16px;
+    margin-top: 20px; border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>GovEval · Wallet Diagnostics</h1>
+  <div class="sub">GenLayer Bradbury · chain 4221 · reads your wallet the same way the app does</div>
+
+  <div class="step">
+    <h2>1 · Wallets detected in this page</h2>
+    <div id="wallets">scanning…</div>
+  </div>
+
+  <div class="step">
+    <h2>2 · Authorised accounts</h2>
+    <div id="accounts">press the button below</div>
+    <button id="btnConnect">Connect wallet</button>
+  </div>
+
+  <div class="step">
+    <h2>3 · Network</h2>
+    <div id="network">—</div>
+    <button id="btnSwitch">Switch to Bradbury (4221)</button>
+  </div>
+
+  <div class="step">
+    <h2>4 · Live balance from the Bradbury RPC</h2>
+    <div id="balance">—</div>
+  </div>
+
+  <div class="step">
+    <h2>5 · Test a real transaction (0.01 GEN)</h2>
+    <div class="sub" style="margin:0 0 8px">This sends an actual eth_sendTransaction to the GovEval contract. If your wallet refuses, the exact error code shows up here.</div>
+    <div id="txtest">not run yet</div>
+    <button id="btnTx" disabled>Send test transaction</button>
+  </div>
+
+  <div class="verdict" id="verdict">
+    Tell me what this page says and I can fix the wallet path properly.
+  </div>
+</div>
+
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const RPC = "https://rpc-bradbury.genlayer.com";
+const CHAIN_HEX = "0x107d"; // 4221
+const CONTRACT = "0xadbb62e3d1611b1f848c8fea33d1191f32a82a4e";
+const CONSENSUS = "0x0112Bf6e83497965A5fdD6Dad1E447a6E004271D";
+const EXPECTED = "0x70EE179e9b306896BfFFAcF9081EdE5320E0e1BB";
+
+let provider = null, walletName = "", account = null;
+
+const line = (k, v, cls = "") =>
+  `<div class="row"><span class="k">${k}</span><span class="v ${cls}">${v}</span></div>`;
+
+// ---- 1. detect ----
+const found = [];
+if (window.okxwallet?.request) found.push(["OKX Wallet (window.okxwallet)", window.okxwallet]);
+if (window.ethereum?.isMetaMask) found.push(["MetaMask (window.ethereum)", window.ethereum]);
+if (window.ethereum?.isRabby) found.push(["Rabby (window.ethereum)", window.ethereum]);
+if (window.ethereum?.isTrust) found.push(["Trust (window.ethereum)", window.ethereum]);
+if (window.ethereum?.request && !window.ethereum.isMetaMask && !window.ethereum.isRabby && !window.ethereum.isTrust)
+  found.push(["generic injected (window.ethereum)", window.ethereum]);
+if (window.ethereum?.providers?.length)
+  found.push([`window.ethereum.providers array (${window.ethereum.providers.length} wallets)`, window.ethereum.providers[0]]);
+
+if (!found.length) {
+  $("wallets").innerHTML = line("result", "NO WALLET FOUND — this page must be opened over https:// (file:// pages get no injected wallet)", "bad");
+} else {
+  $("wallets").innerHTML = found.map(([n]) => line("found", n, "ok")).join("")
+    + line("count", found.length, found.length > 1 ? "warn" : "ok")
+    + (found.length > 1 ? line("note", "several wallets are injecting — the first one is used", "warn") : "");
+  provider = found[0][1]; walletName = found[0][0];
+}
+
+// ---- 2. connect ----
+$("btnConnect").onclick = async () => {
+  if (!provider) return $("accounts").innerHTML = line("error", "no wallet", "bad");
+  $("btnConnect").disabled = true;
+  $("accounts").innerHTML = "waiting for your wallet…";
+  try {
+    const accs = await provider.request({ method: "eth_requestAccounts" });
+    account = accs && accs[0];
+    let html = line("wallet", walletName, "ok");
+    html += line("accounts returned", accs.length ? accs.join(", ") : "(empty)", accs.length ? "ok" : "bad");
+    if (account) {
+      const match = account.toLowerCase() === EXPECTED.toLowerCase();
+      html += line("account[0]", account, match ? "ok" : "warn");
+      html += line("expected (wallet 6)", EXPECTED, "ok");
+      html += line("address matches wallet 6", match ? "YES" : "NO — you are on a different account!", match ? "ok" : "bad");
+    }
+    // eth_accounts is what wallets use to say "authorised"
+    const auth = await provider.request({ method: "eth_accounts" });
+    html += line("eth_accounts", auth.length ? auth.join(", ") : "(empty — not authorised)", auth.length ? "ok" : "bad");
+    $("accounts").innerHTML = html;
+    $("btnTx").disabled = false;
+    await showNetwork();
+  } catch (e) {
+    $("accounts").innerHTML = line("error", (e?.message || String(e)), "bad")
+      + line("code", e?.code ?? "(none)", "bad");
+  } finally {
+    $("btnConnect").disabled = false;
+  }
+};
+
+// ---- 3. network ----
+async function showNetwork() {
+  try {
+    const cid = await provider.request({ method: "eth_chainId" });
+    const ok = cid === CHAIN_HEX;
+    $("network").innerHTML = line("wallet chainId", `${cid} (${parseInt(cid, 16)})`, ok ? "ok" : "bad")
+      + line("required", `${CHAIN_HEX} (4221 Bradbury)`, "ok")
+      + line("status", ok ? "correct network" : "WRONG NETWORK — press the switch button", ok ? "ok" : "bad");
+  } catch (e) {
+    $("network").innerHTML = line("error", (e?.message || String(e)), "bad");
+  }
+}
+$("btnSwitch").onclick = async () => {
+  $("network").innerHTML = "switching…";
+  try {
+    await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_HEX }] });
+  } catch (e) {
+    if (e?.code === 4902) {
+      try {
+        await provider.request({ method: "wallet_addEthereumChain", params: [{
+          chainId: CHAIN_HEX,
+          chainName: "GenLayer Bradbury Testnet",
+          nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
+          rpcUrls: [RPC],
+          blockExplorerUrls: ["https://explorer-bradbury.genlayer.com"],
+        }] });
+      } catch (e2) {
+        $("network").innerHTML = line("add failed", (e2?.message || String(e2)), "bad") + line("code", e2?.code ?? "?", "bad");
+        return;
+      }
+    } else {
+      $("network").innerHTML = line("switch failed", (e?.message || String(e)), "bad") + line("code", e?.code ?? "?", "bad");
+      return;
+    }
+  }
+  await showNetwork();
+};
+
+// ---- 4. balance ----
+async function showBalance() {
+  if (!account) return;
+  try {
+    const r = await fetch(RPC, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getBalance", params: [account, "latest"] }),
+    });
+    const j = await r.json();
+    const gen = Number(BigInt(j.result)) / 1e18;
+    $("balance").innerHTML = line("address", account, "")
+      + line("balance on Bradbury", gen.toFixed(4) + " GEN", gen > 0 ? "ok" : "bad")
+      + line("note", "read straight from the RPC, not from the wallet cache", "");
+  } catch (e) {
+    $("balance").innerHTML = line("error", (e?.message || String(e)), "bad");
+  }
+}
+
+// ---- 5. real transaction ----
+$("btnTx").onclick = async () => {
+  $("btnTx").disabled = true;
+  $("txtest").innerHTML = "asking your wallet to sign…";
+  try {
+    const cid = await provider.request({ method: "eth_chainId" });
+    if (cid !== CHAIN_HEX) throw new Error(`wallet is on chain ${parseInt(cid, 16)}, not 4221`);
+
+    // exactly what genlayer-js ends up sending for fund_treasury
+    const nonceHex = await (await fetch(RPC, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getTransactionCount", params: [account, "pending"] }),
+    })).json().then(j => j.result);
+
+    const valueHex = "0x" + (10n ** 16n).toString(16); // 0.01 GEN
+
+    const req = {
+      from: account,
+      to: CONSENSUS,                    // consensus contract, exactly as the SDK does
+      value: valueHex,
+      data: "0x",                       // empty calldata: proves signing works without contract risk
+      nonce: nonceHex,
+      chainId: CHAIN_HEX,
+    };
+
+    let html = line("request sent to wallet", "", "");
+    html += `<pre>${JSON.stringify(req, null, 2)}</pre>`;
+
+    let hash;
+    try {
+      hash = await provider.request({ method: "eth_sendTransaction", params: [req] });
+    } catch (e1) {
+      // retry without nonce/chainId — some wallets choke on explicit values
+      html += line("first attempt failed", (e1?.message || String(e1)), "bad");
+      html += line("first attempt code", e1?.code ?? "(none)", "bad");
+      const req2 = { from: account, to: account, value: valueHex };
+      html += line("retrying minimal request", JSON.stringify(req2), "warn");
+      try {
+        hash = await provider.request({ method: "eth_sendTransaction", params: [req2] });
+        html += line("minimal request worked", "the problem is in the extra fields (nonce/chainId/to)", "warn");
+      } catch (e2) {
+        html += line("second attempt failed", (e2?.message || String(e2)), "bad");
+        html += line("second attempt code", e2?.code ?? "(none)", "bad");
+        $("txtest").innerHTML = html;
+        $("verdict").innerHTML = e1?.code === 4100
+          ? "<b>4100 means the wallet refuses to sign with this account on this chain.</b> Two usual causes: (a) the account is not the one currently selected in the wallet, (b) the wallet does not support signing on a custom chain it does not have added. Try: switch the wallet's active account to wallet 6, then press Connect again."
+          : "Both request shapes were rejected — see the codes above.";
+        $("btnTx").disabled = false;
+        return;
+      }
+    }
+
+    html += line("transaction accepted by wallet", hash, "ok");
+    $("txtest").innerHTML = html;
+    $("verdict").innerHTML = "<b>Signing works.</b> Your wallet signed a real transaction on Bradbury — so the app's wallet path will work too. Send me the hash.";
+    setTimeout(showBalance, 4000);
+  } catch (e) {
+    $("txtest").innerHTML = line("error", (e?.message || String(e)), "bad") + line("code", e?.code ?? "(none)", "bad");
+  } finally {
+    $("btnTx").disabled = false;
+  }
+};
+
+// ---- auto-run: the whole point is that you only have to open this page ----
+async function autoRun() {
+  if (!provider) {
+    $("verdict").innerHTML = "<b>No wallet found in this page.</b> Open it over https:// and make sure the wallet extension is enabled.";
+    return;
+  }
+  $("verdict").textContent = "Running the checks automatically…";
+  try {
+    // connect silently first, fall back to a request
+    let accs = [];
+    try { accs = await provider.request({ method: "eth_accounts" }); } catch (e) {}
+    if (!accs || !accs.length) {
+      try { accs = await provider.request({ method: "eth_requestAccounts" }); } catch (e) {
+        $("accounts").innerHTML = line("eth_requestAccounts failed", (e?.message || String(e)), "bad") + line("code", e?.code ?? "?", "bad");
+        $("verdict").innerHTML = "<b>The wallet refused to hand over an account.</b> That alone explains 4100 — the site was never authorised.";
+        return;
+      }
+    }
+    account = accs[0];
+    let html = line("wallet", walletName, "ok");
+    html += line("eth_accounts", accs.join(", "), accs.length ? "ok" : "bad");
+    const match = account.toLowerCase() === EXPECTED.toLowerCase();
+    html += line("account in use", account, match ? "ok" : "warn");
+    html += line("wallet 6 address", EXPECTED, "ok");
+    html += line("is this wallet 6?", match ? "YES" : "NO — different account, that is the 4100", match ? "ok" : "bad");
+    $("accounts").innerHTML = html;
+
+    await showNetwork();
+    await showBalance();
+
+    // network fix attempt, then the real transaction
+    let cid = await provider.request({ method: "eth_chainId" });
+    if (cid !== CHAIN_HEX) {
+      try {
+        await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_HEX }] });
+      } catch (e) {
+        if (e?.code === 4902) {
+          await provider.request({ method: "wallet_addEthereumChain", params: [{
+            chainId: CHAIN_HEX, chainName: "GenLayer Bradbury Testnet",
+            nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
+            rpcUrls: [RPC], blockExplorerUrls: ["https://explorer-bradbury.genlayer.com"],
+          }] });
+        }
+      }
+      await showNetwork();
+      cid = await provider.request({ method: "eth_chainId" });
+    }
+    if (cid !== CHAIN_HEX) {
+      $("verdict").innerHTML = `<b>Wallet sits on chain ${parseInt(cid, 16)}, not 4221.</b> The wallet will not sign on the wrong network — this is the 4100. Press "Switch to Bradbury" above and accept it in the wallet.`;
+      return;
+    }
+
+    // signing test
+    $("txtest").innerHTML = "signing a 0.01 GEN transaction…";
+    const nonceHex = await (await fetch(RPC, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getTransactionCount", params: [account, "pending"] }),
+    })).json().then(j => j.result);
+
+    try {
+      const hash = await provider.request({ method: "eth_sendTransaction", params: [{
+        from: account, to: CONSENSUS, value: "0x2386f26fc10000",
+        nonce: nonceHex, chainId: CHAIN_HEX,
+      }] });
+      $("txtest").innerHTML = line("SIGNED OK", hash, "ok");
+      $("verdict").innerHTML = "<b>Everything works.</b> The wallet connected, the network is right and it signed a real transaction. The app's wallet path will work — paste that hash to me.";
+    } catch (e) {
+      $("txtest").innerHTML = line("signing failed", (e?.message || String(e)), "bad") + line("code", e?.code ?? "?", "bad");
+      const c = e?.code;
+      $("verdict").innerHTML = c === 4100
+        ? "<b>4100: the wallet refuses to sign with this account.</b> Usual causes: (1) the active account in the wallet is not the one you connected with — switch it to wallet 6; (2) the wallet only just had Bradbury added, so close the wallet popup and try once more; (3) the extension is in a locked or read-only state."
+        : c === 4001 ? "<b>4001: you rejected the signature prompt.</b> Press the button again and approve it."
+        : `<b>Signing failed with code ${c ?? "unknown"}.</b> Tell me that code and I will pin it down.`;
+    }
+  } catch (e) {
+    $("verdict").innerHTML = `<b>Unexpected failure:</b> ${(e?.message || String(e)).slice(0, 200)} (code ${e?.code ?? "?"})`;
+  }
+}
+
+window.addEventListener("load", () => setTimeout(autoRun, 300));
+</script>
+</body>
+</html>
