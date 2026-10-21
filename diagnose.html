@@ -75,6 +75,12 @@
     <button id="btnTx" disabled>Send test transaction</button>
   </div>
 
+  <div class="step">
+    <h2>6 · The SAME transaction, but through genlayer-js (what the app actually uses)</h2>
+    <div class="sub" style="margin:0 0 8px">Step 5 signed fine with a raw request. This step replays it through genlayer-js exactly like the app does, and prints the payload the library hands to your wallet.</div>
+    <div id="sdk">not run yet</div>
+  </div>
+
   <div class="verdict" id="verdict">
     Tell me what this page says and I can fix the wallet path properly.
   </div>
@@ -327,7 +333,8 @@ async function autoRun() {
         nonce: nonceHex, chainId: CHAIN_HEX,
       }] });
       $("txtest").innerHTML = line("SIGNED OK", hash, "ok");
-      $("verdict").innerHTML = "<b>Everything works.</b> The wallet connected, the network is right and it signed a real transaction. The app's wallet path will work — paste that hash to me.";
+      $("verdict").innerHTML = "<b>Everything works.</b> The wallet connected, the network is right and it signed a real transaction. Now running step 6 to find why the app still fails…";
+      setTimeout(sdkTest, 500);
     } catch (e) {
       $("txtest").innerHTML = line("signing failed", (e?.message || String(e)), "bad") + line("code", e?.code ?? "?", "bad");
       const c = e?.code;
@@ -338,6 +345,72 @@ async function autoRun() {
     }
   } catch (e) {
     $("verdict").innerHTML = `<b>Unexpected failure:</b> ${(e?.message || String(e)).slice(0, 200)} (code ${e?.code ?? "?"})`;
+  }
+}
+
+// ---- 6. the genlayer-js path: spy on what the library hands to the wallet ----
+async function sdkTest() {
+  const el = $("sdk");
+  el.innerHTML = "loading genlayer-js…";
+  try {
+    const { createClient } = await import("https://esm.sh/genlayer-js@1.1.8");
+    const { testnetBradbury } = await import("https://esm.sh/genlayer-js@1.1.8/chains");
+
+    let captured = null;
+    let transports = [];
+
+    // Spy provider: records the payload, then forwards to the real wallet
+    const spy = {
+      request: async (args) => {
+        transports.push(args.method);
+        if (args.method === "eth_sendTransaction") captured = args.params;
+        return await provider.request(args);
+      },
+    };
+    if (provider.on) spy.on = (...a) => provider.on(...a);
+
+    // exactly like the app: no account in createClient, account per call
+    const client = createClient({ chain: testnetBradbury, provider: spy });
+
+    let hash = null, err = null;
+    try {
+      hash = await client.writeContract({
+        address: CONTRACT,
+        functionName: "fund_treasury",
+        args: [],
+        value: 10n ** 16n, // 0.01 GEN
+        account: { address: account, type: "json-rpc" },
+      });
+    } catch (e) {
+      err = e;
+    }
+
+    let html = line("methods the library routed to the wallet", transports.join(" → ") || "(none — it never touched the wallet!)", transports.length ? "ok" : "bad");
+    if (captured) {
+      html += line("payload sent to eth_sendTransaction", "", "");
+      html += `<pre>${JSON.stringify(captured[0], null, 2)}</pre>`;
+      const missing = [];
+      if (!captured[0].from) missing.push("from");
+      if (!captured[0].to) missing.push("to");
+      if (!captured[0].data) missing.push("data");
+      html += line("fields missing", missing.length ? missing.join(", ") : "none", missing.length ? "bad" : "ok");
+      const fromOk = captured[0].from && captured[0].from.toLowerCase() === account.toLowerCase();
+      html += line("from matches the connected account", fromOk ? "YES" : "NO", fromOk ? "ok" : "bad");
+    } else {
+      html += line("eth_sendTransaction reached the wallet", "NO — the library never called it", "bad");
+    }
+    if (hash) html += line("RESULT", "signed via genlayer-js: " + hash, "ok");
+    if (err) {
+      html += line("ERROR from genlayer-js", (err?.message || String(err)).slice(0, 300), "bad");
+      html += line("error code", err?.code ?? err?.cause?.code ?? "(none)", "bad");
+      if (err?.cause) html += line("cause", (err.cause?.message || String(err.cause)).slice(0, 200), "warn");
+    }
+    el.innerHTML = html;
+    $("verdict").innerHTML = hash
+      ? "<b>genlayer-js also works.</b> So the app failure is in my app code, not the library. Send me this whole page's text."
+      : "<b>Found it.</b> The raw request signs, but genlayer-js does not. The payload and error above show exactly where it breaks — send me this page's text.";
+  } catch (e) {
+    el.innerHTML = line("fatal", (e?.message || String(e)).slice(0, 300), "bad");
   }
 }
 

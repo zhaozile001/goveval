@@ -70,8 +70,9 @@ deterministic and real.
 
 ```
 contracts/goveval.py              the Intelligent Contract
-tests/direct/test_goveval.py      17 direct-mode tests
+tests/direct/test_goveval.py      38 direct-mode tests
 index.html                        web UI (no build step, opens straight in a browser)
+diagnose.html                     wallet diagnostic page (extension, account, chain, signing)
 genlayer.config.yaml              network configuration (Bradbury default)
 ```
 
@@ -138,6 +139,33 @@ The end-to-end run exercises the real custody and the real payouts: a treasury i
 is submitted with a bond, the jury reviews it on-chain, the grant is settled, and the remaining
 treasury is withdrawn. See `_提交材料.md` and `ge_audit.txt` / `ge_evidence.txt` for the transaction
 hashes produced by that run.
+
+### Browser wallet path (verified with a real wallet signature)
+
+The web UI is not a mock: a browser wallet signs the transaction and the contract state changes.
+
+Transaction `0x20736947f9781233d006bc33c55586ca152e408dc179027db79b5306f3bfdcda`
+
+- `from` `0x70EE179e9b306896BfFFAcF9081EdE5320E0e1BB` — the connected browser wallet, not a local script key
+- method `fund_treasury`, `value` 0.1 GEN, execution result `RETURN`
+- treasury moved **2.6 → 2.7 GEN**, so the call really landed
+- EVM block 25846426, `input` carries the 522-character calldata for the call
+
+The signing path in `index.html`:
+
+- `createClient` is **not** given `window.ethereum` as the account. The connected address is supplied
+  per call as a JSON-RPC account object `{address, type:"json-rpc"}`, and the signing provider is
+  wrapped so the SDK cannot fall back to `window.ethereum`. With more than one extension installed
+  that fallback is what produced `4100 unauthorised`.
+- `wallet_switchEthereumChain` runs before every write. `4902` triggers `wallet_addEthereumChain`, and
+  `4001` / `-32002` / `4100` each map to an explicit message instead of a silent failure.
+  `eth_chainId` is compared against `4221` before anything is signed.
+- A transaction hash is never treated as success: the receipt is awaited to `ACCEPTED` / `FINALIZED`
+  and `txExecutionResultName` is checked first.
+
+`diagnose.html` re-checks the wallet path independently — it reports the detected extensions, the
+addresses returned by `eth_accounts`, the current chain, the live balance read straight from the RPC,
+and the exact error code if signing is refused.
 
 ---
 
