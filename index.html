@@ -134,6 +134,21 @@
       <button class="solid" id="connectBtn">Connect wallet</button>
       <div id="walletMsg" role="status" aria-live="polite"
            style="flex-basis:100%;text-align:right;font-size:12.5px;line-height:1.5;margin-top:7px;min-height:1.2em"></div>
+      <details style="flex-basis:100%;text-align:right;font-size:12px;margin-top:4px">
+        <summary style="cursor:pointer;color:#8b96c4;outline:none">Advanced: sign with a local key</summary>
+        <div style="margin-top:8px;padding:10px;border:1px solid #2a3358;border-radius:8px;text-align:left;background:#0d1226">
+          <div style="color:#8b96c4;line-height:1.6;margin-bottom:8px">
+            For testing only. The key is kept in this tab's memory, never stored, and never sent
+            anywhere except to sign your own transactions locally. MetaMask cannot be used on
+            Bradbury right now: its JSON-RPC requests carry a string <code>id</code> and the
+            Bradbury node only accepts an integer, so every <code>eth_sendRawTransaction</code> is
+            rejected before it reaches the chain.
+          </div>
+          <input id="pkInput" type="password" placeholder="0x… private key"
+                 style="width:100%;padding:8px;border-radius:6px;border:1px solid #2a3358;background:#080d1e;color:#e0e7ff;font-family:monospace;font-size:12px" />
+          <button id="pkConnect" class="solid" style="margin-top:8px">Use this key</button>
+        </div>
+      </details>
     </div>
   </header>
 
@@ -369,18 +384,19 @@ function walletErr(e) {
 }
 
 async function ensureBradbury() {
+  const prov = activeProvider || window.ethereum;
   try {
-    await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: BRADBURY_HEX }] });
+    await prov.request({ method: "wallet_switchEthereumChain", params: [{ chainId: BRADBURY_HEX }] });
     return true;
   } catch (e) {
     if (e && e.code === 4902) {
-      await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{
+      await prov.request({ method: "wallet_addEthereumChain", params: [{
         chainId: BRADBURY_HEX, chainName: "GenLayer Bradbury Testnet",
         nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
         rpcUrls: ["https://rpc-bradbury.genlayer.com"],
         blockExplorerUrls: ["https://explorer-bradbury.genlayer.com"],
       }]});
-      await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: BRADBURY_HEX }] });
+      await prov.request({ method: "wallet_switchEthereumChain", params: [{ chainId: BRADBURY_HEX }] });
       return true;
     }
     if (e && e.code === 4001) return false;      // user declined; caller reports it
@@ -395,16 +411,35 @@ function wmsg(text, kind) {
   el.style.color = kind === "err" ? "#fb7185" : kind === "ok" ? "#34d399" : "#8b96c4";
 }
 
+// Pick whichever EIP-1193 wallet is present. OKX exposes window.okxwallet, and some setups only
+// inject there; MetaMask and Rabby use window.ethereum.
+function pickProvider() {
+  const cands = [
+    { name: "OKX Wallet", p: window.okxwallet },
+    { name: "MetaMask", p: window.ethereum && window.ethereum.isMetaMask ? window.ethereum : null },
+    { name: "Rabby", p: window.ethereum && window.ethereum.isRabby ? window.ethereum : null },
+    { name: "injected", p: window.ethereum },
+  ];
+  for (const c of cands) if (c.p && c.p.request) return c;
+  return null;
+}
+
+let activeProvider = null;
+let activeWalletName = "";
+
 $("connectBtn").addEventListener("click", async () => {
-  if (!window.ethereum) {
-    wmsg("No wallet found in this page. Install MetaMask (or Rabby), or open this page over https — browser wallets do not inject into file:// pages.", "err");
-    msg($("fundMsg"), "No wallet detected — install MetaMask.", "err");
+  const found = pickProvider();
+  if (!found) {
+    wmsg("No wallet found in this page. Install OKX Wallet or MetaMask, and open this page over https — wallets do not inject into file:// pages.", "err");
+    msg($("fundMsg"), "No wallet detected.", "err");
     return;
   }
-  wmsg("Requesting wallet access…");
+  activeProvider = found.p;
+  activeWalletName = found.name;
+  wmsg("Using " + found.name + " …");
   $("connectBtn").disabled = true;
   try {
-    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+    const accounts = await activeProvider.request({ method: "eth_requestAccounts" });
     if (!accounts || !accounts.length) throw new Error("Your wallet returned no account.");
     myAddr = accounts[0];
     wmsg("Account " + short(myAddr) + " — checking network…");
@@ -415,7 +450,7 @@ $("connectBtn").addEventListener("click", async () => {
       msg($("fundMsg"), "Bradbury network is required — switch it in your wallet and try again.", "err");
       return;
     }
-    const current = await window.ethereum.request({ method: "eth_chainId" });
+    const current = await activeProvider.request({ method: "eth_chainId" });
     if (current !== BRADBURY_HEX) {
       wmsg(`Your wallet is on chain ${parseInt(current, 16)}, but this app needs Bradbury (4221).`, "err");
       msg($("fundMsg"), `Your wallet is on chain ${parseInt(current, 16)}, but this app needs Bradbury (4221).`, "err");
@@ -432,7 +467,17 @@ $("connectBtn").addEventListener("click", async () => {
     $("netLabel").textContent = short(myAddr);
     $("netDot").classList.add("on");
     $("connectBtn").textContent = "Connected";
-    wmsg("Connected on Bradbury · " + short(myAddr), "ok");
+
+    // read the real on-chain balance from the Bradbury RPC (not from the wallet's cache)
+    let balTxt = "";
+    try {
+      const raw = await readClient.getBalance({ address: myAddr }).catch(() => null);
+      if (raw !== null && raw !== undefined) {
+        balTxt = " · " + eth(raw) + " GEN";
+      }
+    } catch (e) { /* ignore */ }
+    wmsg(activeWalletName + " connected on Bradbury · " + short(myAddr) + balTxt, "ok");
+    bindWalletEvents(activeProvider);
     msg($("fundMsg"), "Wallet connected on Bradbury.", "ok");
     if (selected) await openProposal(selected);
   } catch (e) {
@@ -443,9 +488,35 @@ $("connectBtn").addEventListener("click", async () => {
   }
 });
 
+// ---- local-key signer (testing path; bypasses the MetaMask/RPC id incompatibility) ----
+async function connectWithKey() {
+  const raw = ($("pkInput").value || "").trim();
+  if (!raw) return wmsg("Paste a private key first.", "err");
+  const hex = raw.startsWith("0x") ? raw : "0x" + raw;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(hex)) return wmsg("That does not look like a 32-byte hex private key.", "err");
+  try {
+    const { createAccount } = await import("https://esm.sh/genlayer-js@1.1.8");
+    const acct = createAccount(hex);
+    myAddr = acct.address;
+    writeClient = createClient({ chain: testnetBradbury, account: acct });
+    $("pkInput").value = "";
+    $("netLabel").textContent = short(myAddr);
+    $("netDot").classList.add("on");
+    $("connectBtn").textContent = "Key active";
+    wmsg("Local key active · " + short(myAddr) + " (testing path)", "ok");
+    msg($("fundMsg"), "Signing locally with " + short(myAddr) + ".", "ok");
+    if (selected) await openProposal(selected);
+  } catch (e) {
+    wmsg("Key rejected: " + walletErr(e), "err");
+  }
+}
+$("pkConnect").addEventListener("click", connectWithKey);
+$("pkInput").addEventListener("keydown", (e) => { if (e.key === "Enter") connectWithKey(); });
+
 // react to the user switching account or network in the wallet
-if (window.ethereum && window.ethereum.on) {
-  window.ethereum.on("accountsChanged", (accs) => {
+function bindWalletEvents(prov) {
+  if (!prov || !prov.on) return;
+  prov.on("accountsChanged", (accs) => {
     myAddr = accs && accs.length ? accs[0] : null;
     writeClient = null;
     $("connectBtn").textContent = myAddr ? "Connected" : "Connect Wallet";
@@ -454,7 +525,7 @@ if (window.ethereum && window.ethereum.on) {
     wmsg(myAddr ? "Account changed · " + short(myAddr) : "Wallet disconnected.", myAddr ? "ok" : "err");
     msg($("fundMsg"), myAddr ? "Wallet account changed." : "Wallet disconnected.", myAddr ? "ok" : "err");
   });
-  window.ethereum.on("chainChanged", () => window.location.reload());
+  prov.on("chainChanged", () => window.location.reload());
 }
 
 
